@@ -6,11 +6,24 @@ import "time"
 type Config struct {
 	ProviderBuild     ProviderBuildConfig
 	ProviderWeb       ProviderWebConfig
+	ProviderConsole   ProviderConsoleConfig
 	Batch             BatchConfig
 	Media             MediaConfig
+	Frontend          FrontendConfig
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+}
+
+// FrontendConfig 定义公开 API 地址的运行时覆盖值；留空时使用配置文件值。
+type FrontendConfig struct {
+	PublicAPIBaseURL string
+}
+
+type ProviderConsoleConfig struct {
+	BaseURL     string
+	UserAgent   string
+	ChatTimeout time.Duration
 }
 
 type MediaConfig struct {
