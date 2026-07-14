@@ -55,43 +55,22 @@ flowchart LR
 
 ## 快速部署
 
-### Docker Compose
+容器内统一使用 `/app/config.yaml`。首次启动时若该文件不存在，服务会自动生成默认配置；数据库与媒体保存在 `/app/data`，由命名卷持久化。
 
-1. 准备配置：
+凭据加密密钥通过环境变量 `GROK2API_CREDENTIAL_ENCRYPTION_KEY` 注入（Base64 编码的 32 字节密钥）。`jwtSecret` 会由该密钥自动派生，无需单独配置。
+
+### Docker Compose
 
 ```bash
 git clone https://github.com/chenyme/grok2api.git
 cd grok2api
-cp config.example.yaml config.yaml
-```
 
-2. 生成并填写安全密钥：
-
-```bash
-openssl rand -hex 32
-openssl rand -base64 32
-```
-
-```yaml
-secrets:
-  jwtSecret: "替换为 hex 随机值"
-  credentialEncryptionKey: "替换为 Base64 随机密钥"
-
-bootstrapAdmin:
-  username: "admin"
-  password: "替换为强密码"
-```
-
-3. 启动：
-
-```bash
+export GROK2API_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 docker compose pull
 docker compose up -d
 ```
 
-访问 `http://127.0.0.1:8000`。
-
-官方镜像已经包含前端构建产物，管理端与 API 由同一个 Go 服务提供。Compose 默认将 `config.yaml` 只读挂载到容器，并使用 `grok2api-data` 命名卷保存 SQLite 数据库和本地媒体。
+访问 `http://127.0.0.1:8000`，默认管理员账号为 `admin` / `grok2api`。
 
 常用命令：
 
@@ -101,14 +80,72 @@ docker compose restart grok2api
 docker compose down
 ```
 
+如需自定义配置，挂载到 `/app/config.yaml` 即可；文件已存在时不会覆盖：
+
+```bash
+# docker-compose.yml
+volumes:
+  - grok2api-data:/app/data
+  - ./config.yaml:/app/config.yaml
+```
+
+可参考 [`config.example.yaml`](./config.example.yaml) 编写本地配置。
+
+### Docker CLI
+
+```bash
+export GROK2API_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+
+docker pull ghcr.io/chenyme/grok2api:latest
+
+docker run -d \
+  --name grok2api \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e TZ=Asia/Shanghai \
+  -e GROK2API_CREDENTIAL_ENCRYPTION_KEY \
+  -v grok2api-data:/app/data \
+  ghcr.io/chenyme/grok2api:latest
+```
+
+查看日志与停止：
+
+```bash
+docker logs -f grok2api
+docker stop grok2api
+docker rm grok2api
+```
+
+挂载自定义配置：
+
+```bash
+docker run -d \
+  --name grok2api \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e TZ=Asia/Shanghai \
+  -e GROK2API_CREDENTIAL_ENCRYPTION_KEY \
+  -v grok2api-data:/app/data \
+  -v "$(pwd)/config.yaml:/app/config.yaml" \
+  ghcr.io/chenyme/grok2api:latest
+```
+
+官方镜像已经包含前端构建产物，管理端与 API 由同一个 Go 服务提供。
+
 ### 源码运行
 
 后端：
 
 ```bash
-cp config.example.yaml config.yaml
+export GROK2API_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 cd backend
 go run ./cmd/grok2api
+```
+
+本地首次运行会在仓库根目录自动生成 `config.yaml`（若不存在）。也可先参考示例手动准备：
+
+```bash
+cp config.example.yaml config.yaml
 ```
 
 前端开发服务器：
@@ -123,14 +160,14 @@ pnpm dev
 
 ## 首次使用
 
-1. 使用 `bootstrapAdmin` 配置的管理员登录。
+1. 使用管理员登录。Docker 默认账号为 `admin` / `grok2api`；源码或自定义配置时使用 `bootstrapAdmin` 中的账号。
 2. 在“上游账号”中接入 Grok Build 或 Grok Web 账号。
 3. 等待本次额度和模型能力同步完成。
 4. 在“模型管理”中确认对外模型名称与启用状态。
 5. 在“客户端密钥”中创建 `g2a_` API Key。
 6. 使用该密钥调用 `/v1/*`。
 
-首次管理员创建后，建议修改管理员密码并从 `config.yaml` 删除 `bootstrapAdmin` 段。`credentialEncryptionKey` 必须长期保留，更换后已有凭据将无法解密。
+首次管理员创建后，建议立即修改管理员密码。`GROK2API_CREDENTIAL_ENCRYPTION_KEY` 必须长期保留且保持不变，更换后已有凭据将无法解密。若未挂载 `/app/config.yaml`，重建容器会重新生成配置文件，但数据库仍在数据卷中，管理员账号不会重复创建。
 
 ## 账号来源
 
@@ -206,7 +243,7 @@ curl http://127.0.0.1:8000/v1/responses \
 
 ## 配置与存储
 
-根目录 `config.yaml` 保存启动配置：
+启动配置保存在 `config.yaml`。容器内路径为 `/app/config.yaml`，本地源码运行为仓库根目录 `config.yaml`。
 
 | 分组 | 说明 |
 | :-- | :-- |
@@ -215,9 +252,16 @@ curl http://127.0.0.1:8000/v1/responses \
 | `database` | SQLite 或 PostgreSQL |
 | `runtimeStore` | Memory 或 Redis |
 | `auth` | 管理员 Token 与安全 Cookie |
-| `secrets` | JWT 与凭据加密密钥 |
+| `secrets` | 凭据加密密钥；`jwtSecret` 由其自动派生 |
+| `bootstrapAdmin` | 首次创建管理员的账号密码 |
 | `provider` | Build/Web 上游默认配置 |
 | `media` | 媒体存储驱动与路径 |
+
+环境变量：
+
+| 变量 | 说明 |
+| :-- | :-- |
+| `GROK2API_CREDENTIAL_ENCRYPTION_KEY` | 凭据加密主密钥（推荐）。可用 `openssl rand -base64 32` 生成 |
 
 账号、模型、额度、审计、客户端密钥、媒体任务和运行设置始终保存在关系型数据库。Redis 用于限流、并发租约、粘滞路由、分布式锁、额度恢复事件和多实例设置通知。
 
@@ -234,6 +278,8 @@ curl http://127.0.0.1:8000/v1/responses \
 
 - 使用 HTTPS，并设置 `auth.secureCookies: true`
 - 保持 `server.swaggerEnabled: false`
+- 通过环境变量或挂载 `/app/config.yaml` 固定 `GROK2API_CREDENTIAL_ENCRYPTION_KEY`
+- 修改默认管理员密码，不要继续使用 `grok2api`
 - 多实例部署使用 PostgreSQL 与 Redis
 - 本地媒体目录在多实例下必须使用共享卷或实例亲和
 - 持久化备份 `config.yaml`、关系型数据库和媒体目录

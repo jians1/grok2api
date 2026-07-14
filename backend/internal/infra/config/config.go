@@ -237,10 +237,30 @@ func Load(path string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	if err := applyBootstrapDefaults(&cfg); err != nil {
+		return Config{}, err
+	}
+	if err := applySecrets(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func applyBootstrapDefaults(cfg *Config) error {
+	if strings.TrimSpace(cfg.BootstrapAdmin.Username) == "" {
+		cfg.BootstrapAdmin.Username = DefaultBootstrapUsername
+	}
+	password := strings.TrimSpace(cfg.BootstrapAdmin.Password)
+	switch {
+	case password == "":
+		cfg.BootstrapAdmin.Password = DefaultBootstrapPassword
+	case isExampleSecret(password):
+		return errors.New("bootstrapAdmin.password 不能使用示例占位值")
+	}
+	return nil
 }
 
 func resolveRelativePaths(cfg *Config, configPath string) error {
@@ -333,10 +353,7 @@ func (c Config) Validate() error {
 		return errors.New("media.cleanupInterval 必须在 1 分钟到 24 小时之间")
 	}
 	if len(c.Secrets.JWTSecret) < 32 {
-		return errors.New("secrets.jwtSecret 至少需要 32 个字符")
-	}
-	if isExampleSecret(c.Secrets.JWTSecret) {
-		return errors.New("secrets.jwtSecret 不能使用示例占位值")
+		return errors.New("secrets.jwtSecret 无效")
 	}
 	if !validCredentialEncryptionKey(c.Secrets.CredentialEncryptionKey) {
 		return errors.New("secrets.credentialEncryptionKey 必须是 Base64 编码的 32 字节密钥")
@@ -474,8 +491,17 @@ func validStatsigID(value string) bool {
 }
 
 func validCredentialEncryptionKey(value string) bool {
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(value))
+	decoded, err := decodeBase64Key(value)
 	return err == nil && len(decoded) == 32
+}
+
+func decodeBase64Key(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err == nil {
+		return decoded, nil
+	}
+	return base64.RawStdEncoding.DecodeString(value)
 }
 
 func isExampleSecret(value string) bool {

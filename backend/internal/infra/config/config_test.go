@@ -16,7 +16,6 @@ func TestLoadDurationAndSecretsFromYAML(t *testing.T) {
 	data := []byte(`server:
   requestTimeout: 2m
 secrets:
-  jwtSecret: "12345678901234567890123456789012"
   credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 bootstrapAdmin:
   username: "admin"
@@ -36,8 +35,12 @@ bootstrapAdmin:
 	if cfg.Server.ReadTimeout.Value() != 15*time.Minute {
 		t.Fatalf("readTimeout = %s", cfg.Server.ReadTimeout.Value())
 	}
-	if cfg.Secrets.JWTSecret != "12345678901234567890123456789012" {
-		t.Fatalf("jwtSecret = %q", cfg.Secrets.JWTSecret)
+	expectedJWT, err := deriveJWTSecret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Secrets.JWTSecret != expectedJWT {
+		t.Fatalf("jwtSecret = %q, want %q", cfg.Secrets.JWTSecret, expectedJWT)
 	}
 	if cfg.Secrets.CredentialEncryptionKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
 		t.Fatalf("credentialEncryptionKey = %q", cfg.Secrets.CredentialEncryptionKey)
@@ -81,8 +84,9 @@ func TestDefaultGrokBuildClientVersionMatchesLocalBaseline(t *testing.T) {
 func TestLoadAcceptsRuntimeDefaultsAndRejectsUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`secrets:
-  jwtSecret: "12345678901234567890123456789012"
   credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
 routing:
   maxAttempts: 9
 `)
@@ -105,8 +109,9 @@ routing:
 func TestLoadRejectsMediaRuntimeSettingsInYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	data := []byte(`secrets:
-  jwtSecret: "12345678901234567890123456789012"
   credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
 media:
   driver: local
   maxTotalBytes: 1073741824
@@ -149,8 +154,8 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			cfg := defaultConfig()
-			cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
 			cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+			cfg.Secrets.JWTSecret, _ = deriveJWTSecret(cfg.Secrets.CredentialEncryptionKey)
 			mutate(&cfg)
 			if err := cfg.Validate(); err == nil {
 				t.Fatal("unsafe configuration was accepted")
@@ -161,11 +166,10 @@ func TestValidateRejectsUnsafeRuntimeLimits(t *testing.T) {
 
 func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
 	base := defaultConfig()
-	base.Secrets.JWTSecret = "12345678901234567890123456789012"
 	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	base.Secrets.JWTSecret, _ = deriveJWTSecret(base.Secrets.CredentialEncryptionKey)
 
 	tests := map[string]func(*Config){
-		"example jwt":            func(cfg *Config) { cfg.Secrets.JWTSecret = "replace-with-at-least-32-characters" },
 		"invalid encryption key": func(cfg *Config) { cfg.Secrets.CredentialEncryptionKey = "not-a-32-byte-base64-key" },
 		"example admin password": func(cfg *Config) { cfg.BootstrapAdmin.Password = "replace-with-a-strong-password" },
 		"https insecure cookie": func(cfg *Config) {
@@ -193,8 +197,8 @@ func TestValidateRejectsExampleSecretsAndUnsafeCookies(t *testing.T) {
 
 func TestValidateStatsigModes(t *testing.T) {
 	base := defaultConfig()
-	base.Secrets.JWTSecret = "12345678901234567890123456789012"
 	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	base.Secrets.JWTSecret, _ = deriveJWTSecret(base.Secrets.CredentialEncryptionKey)
 
 	manual := base
 	manual.Provider.Web.StatsigMode = StatsigModeManual
@@ -221,8 +225,8 @@ func TestValidateStatsigModes(t *testing.T) {
 
 func TestValidateInfrastructureDrivers(t *testing.T) {
 	base := defaultConfig()
-	base.Secrets.JWTSecret = "12345678901234567890123456789012"
 	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	base.Secrets.JWTSecret, _ = deriveJWTSecret(base.Secrets.CredentialEncryptionKey)
 
 	postgresRedis := base
 	postgresRedis.Database.Driver = "postgres"
@@ -247,8 +251,8 @@ func TestValidateInfrastructureDrivers(t *testing.T) {
 
 func TestValidateFrontendPublicAPIBaseURL(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
 	cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	cfg.Secrets.JWTSecret, _ = deriveJWTSecret(cfg.Secrets.CredentialEncryptionKey)
 	for _, value := range []string{"", "127.0.0.1:8000", "ftp://example.com", "https://user@example.com", "https://example.com?token=value"} {
 		cfg.Frontend.PublicAPIBaseURL = value
 		if err := cfg.Validate(); err == nil {

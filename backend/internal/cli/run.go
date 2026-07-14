@@ -20,6 +20,9 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := config.Ensure(options.configPath); err != nil {
+		return err
+	}
 	cfg, err := config.Load(options.configPath)
 	if err != nil {
 		return err

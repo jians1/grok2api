@@ -231,8 +231,9 @@ func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(`secrets:
-  jwtSecret: "12345678901234567890123456789012"
   credentialEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+bootstrapAdmin:
+  password: "password123"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -46,14 +46,11 @@ RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
 
 FROM alpine:${ALPINE_VERSION}
 
-ENV TZ=Asia/Shanghai \
-    GROK2API_CONFIG_SOURCE=/run/grok2api/config.yaml
+ENV TZ=Asia/Shanghai
 
-RUN apk add --no-cache ca-certificates su-exec tzdata && \
-    addgroup -S -g 10001 grok2api && \
-    adduser -S -D -H -u 10001 -G grok2api grok2api && \
-    mkdir -p /app/data /run/grok2api && \
-    chown -R grok2api:grok2api /app/data /run/grok2api
+RUN apk add --no-cache ca-certificates tzdata && \
+    mkdir -p /app/data && \
+    chmod 755 /app /app/data
 
 WORKDIR /app
 
@@ -67,4 +64,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD wget -qO- http://127.0.0.1:8000/healthz >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/grok2api-entrypoint"]
-CMD ["/app/grok2api", "--config", "/app/config.yaml", "--listen", "0.0.0.0:8000"]
