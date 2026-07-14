@@ -132,6 +132,40 @@ docker run -d \
 
 官方镜像已经包含前端构建产物，管理端与 API 由同一个 Go 服务提供。
 
+### 镜像版本
+
+推送到 `main` 只会自动跑测试，不会发布镜像。发布镜像有两种方式：
+
+**1. GitHub Actions 手动发布**
+
+进入 Actions → Docker → Run workflow，可设置：
+
+| 参数 | 说明 |
+| :-- | :-- |
+| `version` | 镜像版本号（如 `3.0.1`）。留空则读取仓库根目录 `VERSION` 文件 |
+| `publish_latest` | 是否同时打上 `latest` 标签，默认 `true` |
+
+例如填写 `version=3.0.1` 会发布：
+
+- `ghcr.io/jians1/grok2api:3.0.1`
+- `ghcr.io/jians1/grok2api:latest`（若勾选）
+- `ghcr.io/jians1/grok2api:sha-<commit>`
+
+**2. 推送 Git 标签（正式发版）**
+
+```bash
+git tag v3.0.1
+git push origin v3.0.1
+```
+
+会自动发布 `3.0.1`、`3.0` 和 `sha-<commit>` 标签。
+
+拉取指定版本：
+
+```bash
+docker pull ghcr.io/jians1/grok2api:3.0.1
+```
+
 ### 源码运行
 
 后端：

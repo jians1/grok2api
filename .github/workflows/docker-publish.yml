@@ -8,6 +8,16 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 镜像版本号（如 3.0.1 或 v3.0.1）。留空则读取仓库 VERSION 文件。
+        required: false
+        type: string
+      publish_latest:
+        description: 同时发布 latest 标签
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: docker-${{ github.workflow }}-${{ github.ref }}
@@ -94,16 +104,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve release version
+        id: release
+        run: |
+          version=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            if [ -z "$version" ] && [ -f VERSION ]; then
+              version="$(tr -d '[:space:]' < VERSION)"
+            fi
+          fi
+          version="${version#v}"
+          if [ -n "$version" ]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "has_version=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_version=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract image metadata
         id: metadata
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.publish_latest }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
+            type=raw,value=${{ steps.release.outputs.version }},enable=${{ steps.release.outputs.has_version == 'true' }}
 
       - name: Build and publish
         uses: docker/build-push-action@v6
