@@ -52,7 +52,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -e GROK2API_CREDENTIAL_ENCRYPTION_KEY \
   -v grok2api-data:/app/data \
-  ghcr.io/chenyme/grok2api:latest
+  ghcr.io/jians1/grok2api:latest
 ```
 
 Compose 与更多部署说明见仓库根目录 [`README.md`](../README.md)。

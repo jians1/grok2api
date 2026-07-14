@@ -19,7 +19,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: chenyme/grok2api
+  IMAGE_NAME: jians1/grok2api
 
 jobs:
   verify:

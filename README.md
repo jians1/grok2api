@@ -9,7 +9,7 @@
 <p align="center">
   <a href="./backend/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" /></a>
   <a href="./frontend/package.json"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827" /></a>
-  <a href="https://github.com/chenyme/grok2api/actions/workflows/docker-publish.yml"><img alt="Docker" src="https://github.com/chenyme/grok2api/actions/workflows/docker-publish.yml/badge.svg" /></a>
+  <a href="https://github.com/jians1/grok2api/actions/workflows/docker-publish.yml"><img alt="Docker" src="https://github.com/jians1/grok2api/actions/workflows/docker-publish.yml/badge.svg" /></a>
 </p>
 
 > [!TIP]
@@ -62,7 +62,7 @@ flowchart LR
 ### Docker Compose
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/jians1/grok2api.git
 cd grok2api
 
 export GROK2API_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
@@ -96,7 +96,7 @@ volumes:
 ```bash
 export GROK2API_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 
-docker pull ghcr.io/chenyme/grok2api:latest
+docker pull ghcr.io/jians1/grok2api:latest
 
 docker run -d \
   --name grok2api \
@@ -105,7 +105,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -e GROK2API_CREDENTIAL_ENCRYPTION_KEY \
   -v grok2api-data:/app/data \
-  ghcr.io/chenyme/grok2api:latest
+  ghcr.io/jians1/grok2api:latest
 ```
 
 查看日志与停止：
@@ -127,7 +127,7 @@ docker run -d \
   -e GROK2API_CREDENTIAL_ENCRYPTION_KEY \
   -v grok2api-data:/app/data \
   -v "$(pwd)/config.yaml:/app/config.yaml" \
-  ghcr.io/chenyme/grok2api:latest
+  ghcr.io/jians1/grok2api:latest
 ```
 
 官方镜像已经包含前端构建产物，管理端与 API 由同一个 Go 服务提供。
