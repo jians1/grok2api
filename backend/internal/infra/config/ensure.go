@@ -16,10 +16,9 @@ const (
 )
 
 type bootstrapFile struct {
-	BootstrapAdmin BootstrapAdminConfig `yaml:"bootstrapAdmin"`
-	Frontend       FrontendConfig       `yaml:"frontend"`
-	Database       DatabaseConfig       `yaml:"database"`
-	Media          MediaConfig          `yaml:"media"`
+	Frontend FrontendConfig `yaml:"frontend"`
+	Database DatabaseConfig `yaml:"database"`
+	Media    MediaConfig    `yaml:"media"`
 }
 
 // Ensure 在配置文件不存在时写入默认启动配置。
@@ -42,10 +41,6 @@ func Ensure(path string) error {
 		staticPath = "/app/frontend/dist"
 	}
 	payload := bootstrapFile{
-		BootstrapAdmin: BootstrapAdminConfig{
-			Username: DefaultBootstrapUsername,
-			Password: DefaultBootstrapPassword,
-		},
 		Frontend: FrontendConfig{
 			PublicAPIBaseURL: "http://127.0.0.1:8000",
 			StaticPath:       staticPath,

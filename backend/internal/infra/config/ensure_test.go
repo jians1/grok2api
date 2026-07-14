@@ -18,9 +18,10 @@ func TestEnsureCreatesBootstrapConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
+	if strings.Contains(content, "bootstrapAdmin") {
+		t.Fatalf("generated config should not include bootstrapAdmin:\n%s", content)
+	}
 	for _, snippet := range []string{
-		"username: admin",
-		"password: grok2api",
 		"path: ./data/backend.db",
 		"path: ./data/media",
 	} {

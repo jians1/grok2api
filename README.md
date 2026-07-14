@@ -194,7 +194,7 @@ pnpm dev
 
 ## 首次使用
 
-1. 使用管理员登录。Docker 默认账号为 `admin` / `grok2api`；源码或自定义配置时使用 `bootstrapAdmin` 中的账号。
+1. 使用管理员登录，默认账号为 `admin` / `grok2api`。仅在挂载自定义配置且显式填写 `bootstrapAdmin` 时，才使用自定义首次管理员。
 2. 在“上游账号”中接入 Grok Build 或 Grok Web 账号。
 3. 等待本次额度和模型能力同步完成。
 4. 在“模型管理”中确认对外模型名称与启用状态。
@@ -287,7 +287,7 @@ curl http://127.0.0.1:8000/v1/responses \
 | `runtimeStore` | Memory 或 Redis |
 | `auth` | 管理员 Token 与安全 Cookie |
 | `secrets` | 凭据加密密钥；`jwtSecret` 由其自动派生 |
-| `bootstrapAdmin` | 首次创建管理员的账号密码 |
+| `bootstrapAdmin` | 可选，自定义首次管理员；省略时默认 `admin` / `grok2api` |
 | `provider` | Build/Web 上游默认配置 |
 | `media` | 媒体存储驱动与路径 |
 
