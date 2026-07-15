@@ -9,7 +9,7 @@
 <p align="center">
   <a href="./backend/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" /></a>
   <a href="./frontend/package.json"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827" /></a>
-  <a href="https://github.com/jians1/grok2api/actions/workflows/ghcr-image.yml"><img alt="Docker" src="https://github.com/jians1/grok2api/actions/workflows/ghcr-image.yml/badge.svg" /></a>
+  <a href="https://github.com/jians1/grok2api/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jians1/grok2api/actions/workflows/ci.yml/badge.svg" /></a>
 </p>
 
 > [!TIP]
@@ -137,7 +137,7 @@ docker run -d \
 
 ### 镜像版本
 
-推送到 `main` 只会自动跑测试，不会发布镜像。发布镜像有两种方式：
+推送到 `main` 只会自动跑 CI（测试、lint、Swagger 校验与 Go 漏洞扫描），不会发布镜像。发布镜像有两种方式：
 
 **1. GitHub Actions 手动发布**
 
