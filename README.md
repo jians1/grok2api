@@ -9,7 +9,7 @@
 <p align="center">
   <a href="./backend/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" /></a>
   <a href="./frontend/package.json"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827" /></a>
-  <a href="https://github.com/jians1/grok2api/actions/workflows/docker-publish.yml"><img alt="Docker" src="https://github.com/jians1/grok2api/actions/workflows/docker-publish.yml/badge.svg" /></a>
+  <a href="https://github.com/jians1/grok2api/actions/workflows/ghcr-image.yml"><img alt="Docker" src="https://github.com/jians1/grok2api/actions/workflows/ghcr-image.yml/badge.svg" /></a>
 </p>
 
 > [!TIP]
@@ -141,7 +141,7 @@ docker run -d \
 
 **1. GitHub Actions 手动发布**
 
-进入 Actions → Docker → Run workflow，可设置：
+进入 Actions → GHCR Image → Run workflow，可设置：
 
 | 参数 | 说明 |
 | :-- | :-- |
