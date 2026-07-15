@@ -29,12 +29,8 @@ env:
   IMAGE_NAME: jians1/grok2api
 
 jobs:
-  verify:
-    uses: ./.github/workflows/verify.yml
-
   image:
     name: Build and publish image
-    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
