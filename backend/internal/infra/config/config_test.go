@@ -96,12 +96,13 @@ bootstrapAdmin:
   password: "password123"
 routing:
   maxAttempts: 9
+  preferFreeBuild: true
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
-	if err != nil || cfg.Routing.MaxAttempts != 9 {
+	if err != nil || cfg.Routing.MaxAttempts != 9 || !cfg.Routing.PreferFreeBuild {
 		t.Fatalf("runtime defaults = %#v, err = %v", cfg.Routing, err)
 	}
 	data = append(data, []byte("unknownField: true\n")...)
