@@ -172,8 +172,8 @@ func (s *Service) List(ctx context.Context, page, pageSize int) ([]auditdomain.R
 	if pageSize < 1 {
 		pageSize = 20
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > 500 {
+		pageSize = 500
 	}
 	return s.audits.List(ctx, (page-1)*pageSize, pageSize)
 }
@@ -211,8 +211,8 @@ func (s *Service) ListCursor(ctx context.Context, rawCursor string, pageSize int
 	if pageSize < 1 {
 		pageSize = 50
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > 500 {
+		pageSize = 500
 	}
 	if filter.Sort.Field == "" && filter.Sort.Direction == "" {
 		filter.Sort = repository.SortQuery{Field: "createdAt", Direction: repository.SortDescending}

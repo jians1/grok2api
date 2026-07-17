@@ -111,8 +111,8 @@ func (h *Handler) list(c *gin.Context) {
 	if pageSize < 1 {
 		pageSize = 20
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > 500 {
+		pageSize = 500
 	}
 	values, total, err := h.service.List(c.Request.Context(), page, pageSize)
 	if err != nil {

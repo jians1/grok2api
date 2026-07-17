@@ -273,8 +273,8 @@ func pagination(c *gin.Context) (int, int) {
 	if pageSize < 1 {
 		pageSize = 20
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > 500 {
+		pageSize = 500
 	}
 	return page, pageSize
 }

@@ -47,7 +47,7 @@ function PageSizeSelector({ pageSize, onChange }: { pageSize: number; onChange: 
       <Select value={String(pageSize)} onValueChange={(value) => onChange(Number(value))}>
         <SelectTrigger className="h-8 w-[76px] rounded-md bg-secondary px-3 text-xs shadow-none" aria-label={t("common.perPage")}><SelectValue /></SelectTrigger>
         <SelectContent align="end">
-          {[20, 50, 100].map((value) => <SelectItem key={value} value={String(value)}>{value}</SelectItem>)}
+          {[20, 50, 100, 300, 500].map((value) => <SelectItem key={value} value={String(value)}>{value}</SelectItem>)}
         </SelectContent>
       </Select>
       <span>{t("common.rows")}</span>
