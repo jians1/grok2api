@@ -15,8 +15,7 @@ Thumbs.db
 /backend/config.yaml
 /config.local.yaml
 /config.*.local.yaml
-/docs/rules/
-/docs/project/
+/docs/*
 /backend/docs/goal/
 *.har
 *.pcap
