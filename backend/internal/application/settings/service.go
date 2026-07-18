@@ -52,7 +52,6 @@ type ProviderWebConfig struct {
 
 type ProviderConsoleConfig struct {
 	BaseURL     string
-	UserAgent   string
 	ChatTimeout string
 }
 
@@ -277,8 +276,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	// Console 是后续版本新增的完整配置段；旧 JSON 整段缺失时沿用代码默认值。
 	if value.ProviderConsole != (settingsdomain.ProviderConsoleConfig{}) {
 		base.Provider.Console = config.ConsoleProviderConfig{
-			BaseURL: value.ProviderConsole.BaseURL, UserAgent: value.ProviderConsole.UserAgent,
-			ChatTimeout: config.Duration(value.ProviderConsole.ChatTimeout),
+			BaseURL: value.ProviderConsole.BaseURL, ChatTimeout: config.Duration(value.ProviderConsole.ChatTimeout),
 		}
 	}
 	randomDelay := time.Duration(-1)
@@ -298,7 +296,9 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
 		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
-		PreferFreeBuild: value.Routing.PreferFreeBuild,
+		PreferFreeBuild:        value.Routing.PreferFreeBuild,
+		ReasoningReplayEnabled: base.Routing.ReasoningReplayEnabled, ReasoningReplayTTL: base.Routing.ReasoningReplayTTL,
+		ReasoningReplayMaxEntries: base.Routing.ReasoningReplayMaxEntries,
 	}
 	base.Audit = config.AuditConfig{
 		BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: config.Duration(value.Audit.FlushInterval),
@@ -328,8 +328,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			RecoveryBackoffBase: value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
 		},
 		ProviderConsole: settingsdomain.ProviderConsoleConfig{
-			BaseURL: value.Provider.Console.BaseURL, UserAgent: value.Provider.Console.UserAgent,
-			ChatTimeout: value.Provider.Console.ChatTimeout.Value(),
+			BaseURL: value.Provider.Console.BaseURL, ChatTimeout: value.Provider.Console.ChatTimeout.Value(),
 		},
 		Batch: settingsdomain.BatchConfig{
 			ImportConcurrency: value.Batch.ImportConcurrency, ConversionConcurrency: value.Batch.ConversionConcurrency,
@@ -399,7 +398,6 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Provider.Web.MediaConcurrency = input.ProviderWeb.MediaConcurrency
 	next.Provider.Web.AllowNSFW = input.ProviderWeb.AllowNSFW
 	next.Provider.Console.BaseURL = strings.TrimSpace(input.ProviderConsole.BaseURL)
-	next.Provider.Console.UserAgent = strings.TrimSpace(input.ProviderConsole.UserAgent)
 	next.Batch = config.BatchConfig{
 		ImportConcurrency: input.Batch.ImportConcurrency, ConversionConcurrency: input.Batch.ConversionConcurrency,
 		SyncConcurrency: input.Batch.SyncConcurrency, RefreshConcurrency: input.Batch.RefreshConcurrency,
@@ -466,8 +464,7 @@ func toEditable(cfg config.Config) EditableConfig {
 			RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
 		},
 		ProviderConsole: ProviderConsoleConfig{
-			BaseURL: cfg.Provider.Console.BaseURL, UserAgent: cfg.Provider.Console.UserAgent,
-			ChatTimeout: cfg.Provider.Console.ChatTimeout.String(),
+			BaseURL: cfg.Provider.Console.BaseURL, ChatTimeout: cfg.Provider.Console.ChatTimeout.String(),
 		},
 		Batch: BatchConfig{
 			ImportConcurrency: cfg.Batch.ImportConcurrency, ConversionConcurrency: cfg.Batch.ConversionConcurrency,

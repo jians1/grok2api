@@ -92,8 +92,9 @@ type routeResolver interface {
 	GetByProviderUpstream(ctx context.Context, providerValue accountdomain.Provider, upstreamModel string) (modeldomain.Route, error)
 }
 
-// videoAssetReader 从本地媒体层读取已落盘的视频资产。
-type videoAssetReader interface {
+// videoAssetStore 负责归档并读取 Provider 已生成的视频结果。
+type videoAssetStore interface {
+	SaveVideo(ctx context.Context, jobID, contentType string, body io.Reader) (mediadomain.Asset, error)
 	OpenVideo(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
 }
 
@@ -112,7 +113,7 @@ type Service struct {
 	responses      repository.ResponseRepository
 	maxAttempts    atomic.Int64
 	mediaJobs      repository.MediaJobRepository
-	mediaAssets    videoAssetReader
+	mediaAssets    videoAssetStore
 	mediaQueue     chan string
 	mediaMu        sync.Mutex
 	mediaQueued    map[string]struct{}
@@ -141,9 +142,9 @@ func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concu
 	s.mediaQueued = make(map[string]struct{})
 }
 
-// ConfigureMediaAssets 注入本地视频资产读取能力（可选）。
-func (s *Service) ConfigureMediaAssets(reader videoAssetReader) {
-	s.mediaAssets = reader
+// ConfigureMediaAssets 注入本地视频资产归档与读取能力（可选）。
+func (s *Service) ConfigureMediaAssets(store videoAssetStore) {
+	s.mediaAssets = store
 }
 
 func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys *clientkeyapp.Service, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {
@@ -435,15 +436,17 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		}
 		return nil, clientkeyapp.ErrModelNotAllowed
 	}
+	affinityKey := ""
 	if route.Provider == accountdomain.ProviderBuild {
-		input.PromptCacheKey = resolvePromptCacheIdentity(
+		identity := resolveBuildSessionIdentity(
 			input.ClientKey.ID,
 			route.Provider,
 			route.UpstreamModel,
-			operation,
 			input.PromptCacheKey,
 			input.PromptCacheSeed,
 		)
+		input.PromptCacheKey = identity.upstreamID
+		affinityKey = identity.affinityKey
 	}
 	adapter, ok := s.providers.Responses(route.Provider)
 	if !ok {
@@ -497,7 +500,7 @@ attemptLoop:
 		if ownership != nil {
 			lease, err = s.selector.AcquirePinned(ctx, route.Provider, ownership.AccountID, route.UpstreamModel, quotaMode, true)
 		} else {
-			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, input.PromptCacheKey, excluded, !quotaProbeAttempted)
+			lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, affinityKey, excluded, !quotaProbeAttempted)
 		}
 		timing.markSelection(time.Since(selectionStarted))
 		if err != nil {
