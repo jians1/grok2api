@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -33,8 +33,10 @@ import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 import {
+  acceptWebAccountTerms,
   deleteAccount,
   deleteAccounts,
+  enableWebAccountNSFW,
   convertWebAccountsToBuild,
   exportAccounts,
   getAccountSummary,
@@ -51,6 +53,8 @@ import {
   refreshAllAccountTokens,
   refreshAllConsoleAccountQuotas,
   refreshAllWebAccountQuotas,
+  runWebAccountScripts,
+  setWebAccountBirthDate,
   startDeviceAuthorization,
   syncWebAccountsToConsole,
   updateAccount,
@@ -63,10 +67,15 @@ import {
   type BuildConversionInput,
   type BuildConversionStrategy,
   type WebConsoleSyncInput,
+  type WebAccountScriptActions,
+  type WebAccountScriptsInput,
   type DeviceSessionDTO,
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
+import { AccountNameCell } from "@/features/accounts/account-name-cell";
+import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
+import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -85,6 +94,7 @@ export function AccountsPage() {
   const renewalAbortRef = useRef<AbortController | null>(null);
   const conversionAbortRef = useRef<AbortController | null>(null);
   const webConsoleSyncAbortRef = useRef<AbortController | null>(null);
+  const webAccountScriptsAbortRef = useRef<AbortController | null>(null);
   const importAbortRef = useRef<AbortController | null>(null);
   const importToastRef = useRef<string | number | null>(null);
   const [provider, setProvider] = useState<AccountProvider>("grok_build");
@@ -107,6 +117,8 @@ export function AccountsPage() {
   const [webConsoleSyncTargets, setWebConsoleSyncTargets] = useState<string[] | "all" | null>(null);
   const [webConsoleSyncStrategy, setWebConsoleSyncStrategy] = useState<"missing" | "all">("missing");
   const [webConsoleSyncProgress, setWebConsoleSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [webAccountScriptsTargets, setWebAccountScriptsTargets] = useState<string[] | "all" | null>(null);
+  const [webAccountScriptsProgress, setWebAccountScriptsProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
@@ -116,6 +128,7 @@ export function AccountsPage() {
   const [deviceStatus, setDeviceStatus] = useState<"starting" | "pending" | "failed">("starting");
   const [quickImportOpen, setQuickImportOpen] = useState(false);
   const [quickImportTokens, setQuickImportTokens] = useState("");
+  const [webConfirmationTarget, setWebConfirmationTarget] = useState<WebAccountConfirmationTarget | null>(null);
   const debouncedSearch = useDebouncedValue(search);
 
   useEffect(() => () => {
@@ -123,6 +136,7 @@ export function AccountsPage() {
     renewalAbortRef.current?.abort();
     conversionAbortRef.current?.abort();
     webConsoleSyncAbortRef.current?.abort();
+    webAccountScriptsAbortRef.current?.abort();
     importAbortRef.current?.abort();
     if (importToastRef.current !== null) toast.dismiss(importToastRef.current);
   }, []);
@@ -233,6 +247,25 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const webConfirmationMutation = useMutation({
+    mutationFn: ({ account, action }: WebAccountConfirmationTarget) => {
+      if (action === "acceptTerms") return acceptWebAccountTerms(account.id);
+      if (action === "setBirthDate") return setWebAccountBirthDate(account.id);
+      return enableWebAccountNSFW(account.id);
+    },
+    onSuccess: (_, target) => {
+      setWebConfirmationTarget(null);
+      const messageKey = target.action === "acceptTerms"
+        ? "webAccountSettings.termsAccepted"
+        : target.action === "setBirthDate"
+          ? "webAccountSettings.birthDateSaved"
+          : "webAccountSettings.nsfwEnabled";
+      toast.success(t(messageKey));
+    },
+    onError: showError,
+    onSettled: invalidateAccountData,
+  });
+
   const allTokenMutation = useMutation({
     mutationFn: () => {
       const controller = new AbortController();
@@ -307,6 +340,30 @@ export function AccountsPage() {
       setWebConsoleSyncProgress(null);
       invalidateAccountData();
       void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
+
+  const webAccountScriptsMutation = useMutation({
+    mutationFn: (input: WebAccountScriptsInput) => {
+      const controller = new AbortController();
+      webAccountScriptsAbortRef.current = controller;
+      setWebAccountScriptsProgress(null);
+      return runWebAccountScripts(input, setWebAccountScriptsProgress, controller.signal);
+    },
+    onSuccess: (result) => {
+      setWebAccountScriptsTargets(null);
+      setSelected(new Set());
+      if (result.failed > 0) {
+        toast.warning(t("webAccountScripts.completedWithFailures", result));
+      } else {
+        toast.success(t("webAccountScripts.completed", result));
+      }
+    },
+    onError: (error) => { if (!isAbortError(error)) showError(error); },
+    onSettled: () => {
+      webAccountScriptsAbortRef.current = null;
+      setWebAccountScriptsProgress(null);
+      invalidateAccountData();
     },
   });
 
@@ -458,6 +515,14 @@ export function AccountsPage() {
     setConversionTargets(targets);
   }
 
+  function runSelectedWebAccountScripts(actions: WebAccountScriptActions): void {
+    if (webAccountScriptsTargets === "all") {
+      webAccountScriptsMutation.mutate({ all: true, actions });
+    } else if (webAccountScriptsTargets) {
+      webAccountScriptsMutation.mutate({ ids: webAccountScriptsTargets, actions });
+    }
+  }
+
   async function startDeviceLogin(): Promise<void> {
     setDeviceOpen(true);
     setDeviceStatus("starting");
@@ -547,7 +612,9 @@ export function AccountsPage() {
     || importMutation.isPending
     || batchUpdateMutation.isPending
     || batchBillingMutation.isPending
-    || batchDeleteMutation.isPending;
+    || batchDeleteMutation.isPending
+    || webConfirmationMutation.isPending
+    || webAccountScriptsMutation.isPending;
 
   return (
     <div className="space-y-5">
@@ -649,13 +716,15 @@ export function AccountsPage() {
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion([...selected])}>{t("accounts.convertToBuild")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync([...selected])}>{t("webConsoleSync.action")}</Button> : null}
+                {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchBillingMutation.mutate()}>{t("accountCredential.quotaSyncAction")}</Button>
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={bulkTaskPending} onClick={() => setBatchDeleteOpen(true)}>{t("common.delete")}</Button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5">
-                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
-                {provider === "grok_web" && webSummary.total > 0 ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openBuildConversion("all")}>{t("accountBulk.convertAllToBuild")}</Button> : null}
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConsoleSync("all")}>{t("webConsoleSync.allAction")}</Button> : null}
+                {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setSyncAllOpen(true)}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 <DropdownMenu>
@@ -684,10 +753,10 @@ export function AccountsPage() {
           <Table className="table-fixed border-collapse min-w-[780px] xl:min-w-[960px] 2xl:min-w-[1080px]">
             <colgroup>
               <col style={{ width: "3%" }} />
-              <col style={{ width: "15%" }} />
+              <col style={{ width: "18%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "7%" }} />
-              <col style={{ width: provider === "grok_build" ? "30%" : "46%" }} />
+              <col style={{ width: provider === "grok_build" ? "27%" : "43%" }} />
               {provider === "grok_build" ? <col style={{ width: "16%" }} /> : null}
               <col style={{ width: "18%" }} />
               <col style={{ width: "4%" }} />
@@ -706,56 +775,20 @@ export function AccountsPage() {
             </TableHeader>
             <TableBody>
               {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /> : result?.items.map((account) => {
-                const accountDetail = account.email ?? account.userId ?? account.teamId;
-                const showAccountDetail = accountDetail?.trim().toLocaleLowerCase() !== account.name.trim().toLocaleLowerCase();
-                const linkedProviderLabel = account.linkedProvider === "grok_build" ? t("models.providerGrokBuild") : account.linkedProvider === "grok_web" ? t("models.providerGrokWeb") : t("console.name");
                 return (
-	                  <TableRow className="group" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
+	                  <TableRow className="group [&>td]:py-1.5" key={account.id} data-state={selected.has(account.id) ? "selected" : undefined}>
                     <TableCell className="px-2"><Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => toggleAccount(account.id, checked === true)} aria-label={t("common.selectItem", { name: account.name })} /></TableCell>
-	                    <TableCell className="min-w-0">
-	                      <div className="flex min-w-0 items-center gap-1.5">
-	                        <Tooltip>
-	                          <TooltipTrigger asChild><div className="min-w-0 truncate text-xs font-medium">{account.name}</div></TooltipTrigger>
-	                          <TooltipContent>{account.name}</TooltipContent>
-	                        </Tooltip>
-	                        {account.buildBotFlagged ? (
-	                          <Tooltip>
-	                            <TooltipTrigger asChild>
-	                              <span tabIndex={0} className="inline-flex shrink-0 cursor-help whitespace-nowrap text-xs font-medium text-amber-700 dark:text-amber-300">{t("accounts.botRisk")}</span>
-	                            </TooltipTrigger>
-	                            <TooltipContent>{t("accounts.botRiskTooltip")}</TooltipContent>
-	                          </Tooltip>
-	                        ) : null}
-	                      </div>
-                      {showAccountDetail || account.linkedAccountId ? (
-                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                          {showAccountDetail ? <span className="truncate" title={accountDetail}>{accountDetail}</span> : null}
-                          {showAccountDetail && account.linkedAccountId ? <span className="shrink-0 text-border" aria-hidden="true">·</span> : null}
-                          {account.linkedAccountId ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground/80">
-                                  <Link2 className="size-3" />
-                                  {linkedProviderLabel}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>{t("accounts.linkedAccountTooltip", { name: account.linkedAccountName || linkedProviderLabel })}</TooltipContent>
-                            </Tooltip>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </TableCell>
+	                    <TableCell className="min-w-0"><AccountNameCell account={account} /></TableCell>
                     <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("accountType.console")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell className={provider === "grok_build" ? undefined : "px-6"}>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
                     {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
-                      <div>{account.refreshable ? (
+                      {account.refreshable ? (
                         <Tooltip>
                           <TooltipTrigger asChild><span tabIndex={0} className="cursor-help font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.autoRefresh")}</span></TooltipTrigger>
                           <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
                         </Tooltip>
-	                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}</div>
-	                      <div className="mt-0.5 text-muted-foreground">{t(`accounts.buildRouteMode.${account.buildRouteMode}`)}</div>
+                      ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
 	                    </TableCell> : null}
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>
@@ -765,6 +798,13 @@ export function AccountsPage() {
                           <DropdownMenuItem onClick={() => beginEdit(account)}><Pencil />{t("common.edit")}</DropdownMenuItem>
                           {provider === "grok_web" ? <DropdownMenuItem onClick={() => openBuildConversion([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
                           {provider === "grok_web" ? <DropdownMenuItem onClick={() => openWebConsoleSync([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
+                          {provider === "grok_web" ? (
+                            <WebAccountSettingsMenu
+                              account={account}
+                              disabled={bulkTaskPending}
+                              onConfirm={setWebConfirmationTarget}
+                            />
+                          ) : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
@@ -780,6 +820,26 @@ export function AccountsPage() {
         ) : null}
         </DataTableShell>
       </div>
+
+      <WebAccountSettingsDialogs
+        confirmationTarget={webConfirmationTarget}
+        confirmationPending={webConfirmationMutation.isPending}
+        onConfirmationClose={() => setWebConfirmationTarget(null)}
+        onConfirm={(target) => webConfirmationMutation.mutate(target)}
+      />
+
+      {webAccountScriptsTargets !== null ? (
+        <WebAccountScriptsDialog
+          targets={webAccountScriptsTargets}
+          pending={webAccountScriptsMutation.isPending}
+          progress={webAccountScriptsProgress}
+          onClose={() => {
+            webAccountScriptsAbortRef.current?.abort();
+            setWebAccountScriptsTargets(null);
+          }}
+          onRun={runSelectedWebAccountScripts}
+        />
+      ) : null}
 
       <AlertDialog open={syncAllOpen} onOpenChange={(open) => { if (!open) quotaSyncAbortRef.current?.abort(); setSyncAllOpen(open); }}>
         <AlertDialogContent>
