@@ -184,10 +184,14 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = io.ReadAll(compacted.Body)
+	if compacted.MarkFirstToken == nil {
+		t.Fatal("first token marker is nil")
+	}
+	compacted.MarkFirstToken()
 	compacted.Finalize(Usage{}, "resp-compact", "")
 	_ = compacted.Body.Close()
 	logs, total, err = auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 2 || logs[0].Operation != audit.OperationCompaction || !logs[0].Streaming {
+	if err != nil || total != 2 || logs[0].Operation != audit.OperationCompaction || !logs[0].Streaming || logs[0].FirstTokenMS == nil {
 		t.Fatalf("compaction audit = %#v, total=%d, err=%v", logs, total, err)
 	}
 	if _, err := responseRepo.Get(ctx, "resp-compact", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
@@ -1113,6 +1117,14 @@ func TestParseFreeQuotaExhaustion(t *testing.T) {
 	}
 	if _, _, exhausted := parseFreeQuotaExhaustion([]byte(`{"error":"rate limited"}`)); exhausted {
 		t.Fatal("ordinary 429 body must not be treated as Free quota exhaustion")
+	}
+}
+
+func TestParseFreeQuotaExhaustionCurrentBuildFreeLimit(t *testing.T) {
+	body := []byte(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 537365/500000."}`)
+	used, limit, exhausted := parseFreeQuotaExhaustion(body)
+	if !exhausted || used != 537_365 || limit != 500_000 {
+		t.Fatalf("exhausted=%v used=%d limit=%d", exhausted, used, limit)
 	}
 }
 
