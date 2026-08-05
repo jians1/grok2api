@@ -89,7 +89,7 @@ flowchart LR
 
 ## 快速部署
 
-容器内统一使用 `/app/config.yaml`。可通过 `GROK2API_CONFIG` 挂载宿主机配置到 `/run/grok2api/config.yaml`；未挂载时 entrypoint 会自动生成默认配置。数据库与媒体保存在 `/app/data`，由命名卷持久化。
+容器内统一使用 `/app/config.yaml`。首次启动时若该文件不存在，服务会自动生成默认配置；数据库与媒体保存在 `/app/data`，由命名卷持久化。主进程以 root 运行，避免挂载卷与宿主机权限冲突。
 
 凭据加密密钥通过环境变量 `GROK2API_CREDENTIAL_ENCRYPTION_KEY` 注入（Base64 编码的 32 字节密钥）。`jwtSecret` 会由该密钥自动派生，无需单独配置。
 
@@ -375,7 +375,6 @@ docker compose --profile quality-guard up -d --build
 | `GROK2API_CREDENTIAL_ENCRYPTION_KEY` | 凭据加密主密钥（推荐）。可用 `openssl rand -base64 32` 生成 |
 | `GROK2API_DATABASE_URL` | 可选。非空时覆盖 PostgreSQL DSN 并启用 postgres 驱动 |
 | `GROK2API_QUALITY_GUARD_DIR` | 可选。出口质量守护共享状态目录（Compose 默认已设置） |
-| `GROK2API_CONFIG` | 可选。宿主机配置文件路径，挂载到容器 `/run/grok2api/config.yaml` |
 | `GROK2API_IMAGE` | 可选。覆盖默认镜像 `ghcr.io/jians1/grok2api:latest` |
 
 账号、模型、额度、审计、客户端密钥、媒体任务和运行设置始终保存在关系型数据库。Redis 用于限流、并发租约、粘滞路由、分布式锁、额度恢复事件和多实例设置通知。
