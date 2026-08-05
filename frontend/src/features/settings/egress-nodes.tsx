@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -19,7 +19,7 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
-import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -59,6 +59,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       page, pageSize, search: debouncedSearch, scope: scopeFilter as EgressScope | "", enabled: enabledFilter,
       probe: probeFilter, assignment: assignmentFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined,
     }),
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false,
   });
   const save = useMutation({
     mutationFn: () => {
@@ -101,6 +103,15 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       setBatchDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
       toast.success(t("settings.egress.batchDeleted", value));
+    },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const updateManyEnabled = useMutation({
+    mutationFn: (enabled: boolean) => updateEgressNodesEnabled([...selected.keys()], enabled),
+    onSuccess: (value, enabled) => {
+      setSelected(new Map());
+      void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      toast.success(t(enabled ? "settings.egress.batchEnabled" : "settings.egress.batchDisabled", value));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
@@ -157,7 +168,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       ...form,
       scope,
       userAgent: scope === "grok_build" ? "" : (form.userAgent === "" || form.userAgent === previousDefault ? nextDefault : form.userAgent),
-      cloudflareCookies: scope === "grok_build" ? "" : form.cloudflareCookies,
+      cloudflareCookies: scope === "grok_build" || scope === "grok_console_asset" ? "" : form.cloudflareCookies,
     });
   }
 
@@ -165,6 +176,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
     if (scope === "grok_build") return t("settings.egress.scopeBuild");
     if (scope === "grok_console") return t("console.name");
     if (scope === "grok_web_asset") return t("settings.egress.scopeWebAsset");
+    if (scope === "grok_console_asset") return t("settings.egress.scopeConsoleAsset");
     return t("settings.egress.scopeWeb");
   }
 
@@ -199,6 +211,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const selectedNodes = [...selected.values()];
   const selectedAssignedAccounts = selectedNodes.reduce((total, node) => total + node.assignedAccountCount, 0);
   const selectedSourceNodes = selectedNodes.filter((node) => node.sourceId).length;
+  const batchPending = removeMany.isPending || updateManyEnabled.isPending;
   const hasActiveFilters = Boolean(debouncedSearch || scopeFilter || enabledFilter || probeFilter || assignmentFilter);
 
   return (
@@ -223,6 +236,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                     { value: "grok_web", label: scopeLabel("grok_web") },
                     { value: "grok_console", label: scopeLabel("grok_console") },
                     { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
+                    { value: "grok_console_asset", label: scopeLabel("grok_console_asset") },
                   ] },
                   { id: "enabled", label: t("settings.egress.enabled"), value: enabledFilter, onChange: (value) => { setEnabledFilter(value); setPage(1); setSelected(new Map()); }, options: [
                     { value: "enabled", label: t("common.enable") },
@@ -243,7 +257,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 {selected.size > 0 ? (
                   <>
                     <span className="mr-1 text-xs text-muted-foreground">{t("common.selectedCount", { count: selected.size })}</span>
-                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={removeMany.isPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={batchPending || selectedNodes.every((node) => node.enabled)} onClick={() => updateManyEnabled.mutate(true)}><Power />{t("common.enable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" disabled={batchPending || selectedNodes.every((node) => !node.enabled)} onClick={() => updateManyEnabled.mutate(false)}><PowerOff />{t("common.disable")}</Button>
+                    <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={batchPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
                   </>
                 ) : null}
                 <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>
@@ -377,10 +393,11 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                   <SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem>
                   <SelectItem value="grok_console">{t("console.name")}</SelectItem>
                   <SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem>
+                  <SelectItem value="grok_console_asset">{t("settings.egress.scopeConsoleAsset")}</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
-            {form.scope !== "grok_build" ? (
+            {form.scope !== "grok_build" && form.scope !== "grok_console_asset" ? (
               <div className="flex h-10 items-center justify-between gap-4 rounded-md bg-muted/45 px-3">
                 <span className="text-xs font-medium">{t("settings.egress.clearance")}</span>
                 <Badge variant="secondary" className="shrink-0 text-[10px]">
@@ -401,12 +418,12 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
               </div>
               <Switch id="egress-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!editing?.proxyConfigured && !form.proxyURL?.trim()} onCheckedChange={(proxyPool) => setForm({ ...form, proxyPool })} />
             </div>
-            {form.scope !== "grok_build" && clearanceMode === "manual" ? (
+            {form.scope !== "grok_build" && (clearanceMode === "manual" || form.scope === "grok_console_asset") ? (
               <Field label={t("settings.egress.userAgent")} controlId="egress-user-agent">
                 <Input id="egress-user-agent" value={form.userAgent} onChange={(event) => setForm({ ...form, userAgent: event.target.value })} />
               </Field>
             ) : null}
-            {form.scope !== "grok_build" && clearanceMode === "manual" ? (
+            {form.scope !== "grok_build" && form.scope !== "grok_console_asset" && clearanceMode === "manual" ? (
               <Field label={t("settings.egress.cloudflareCookie")} controlId="egress-cookie">
                 <Input id="egress-cookie" type="password" autoComplete="new-password" placeholder={editing?.cookieConfigured ? t("settings.egress.keepConfigured") : "cf_clearance=...; __cf_bm=..."} value={form.cloudflareCookies} onChange={(event) => setForm({ ...form, cloudflareCookies: event.target.value })} />
               </Field>
@@ -433,6 +450,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                     <SelectItem value="grok_web">{t("settings.egress.scopeWeb")}</SelectItem>
                     <SelectItem value="grok_console">{t("console.name")}</SelectItem>
                     <SelectItem value="grok_web_asset">{t("settings.egress.scopeWebAsset")}</SelectItem>
+                    <SelectItem value="grok_console_asset">{t("settings.egress.scopeConsoleAsset")}</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>

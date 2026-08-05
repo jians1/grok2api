@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Shuffle, Trash2 } from "lucide-react";
+import { CircleAlert, CircleHelp, MoreHorizontal, Network, Pencil, Plus, RefreshCw, Search, Shuffle, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -23,6 +23,7 @@ import {
   listEgressSources,
   rebalanceEgressAccounts,
   syncEgressSource,
+  testEgressNodes,
   updateEgressOperationsConfig,
   updateEgressSource,
   type EgressFallbackConfigDTO,
@@ -44,18 +45,23 @@ type SourceForm = EgressSourceInput & { url: string };
 const emptySource: SourceForm = {
   name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
 };
-const fallbackScopes: EgressScope[] = ["grok_build", "grok_web", "grok_console", "grok_web_asset"];
+// Eight nodes run concurrently; each checks IPv4 and IPv6 in parallel with a
+// 15-second ceiling. Keeping a request to 32 nodes leaves enough headroom for
+// the admin HTTP timeout.
+const egressProbeBatchSize = 32;
+const fallbackScopes: EgressScope[] = ["grok_build", "grok_web", "grok_console", "grok_web_asset", "grok_console_asset"];
 const fallbackDescriptionKeys: Record<EgressScope, string> = {
   grok_build: "settings.egress.fallbackBuildHelp",
   grok_web: "settings.egress.fallbackWebHelp",
   grok_console: "settings.egress.fallbackConsoleHelp",
   grok_web_asset: "settings.egress.fallbackWebAssetHelp",
+  grok_console_asset: "settings.egress.fallbackConsoleAssetHelp",
 };
 
 function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
   return {
     grok_build: { mode: "none" }, grok_web: { mode: "none" },
-    grok_console: { mode: "none" }, grok_web_asset: { mode: "none" },
+    grok_console: { mode: "none" }, grok_web_asset: { mode: "none" }, grok_console_asset: { mode: "none" },
   };
 }
 
@@ -78,8 +84,32 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOpera
       grok_web: { ...defaults.grok_web, ...value.fallbacks.grok_web },
       grok_console: { ...defaults.grok_console, ...value.fallbacks.grok_console },
       grok_web_asset: { ...defaults.grok_web_asset, ...value.fallbacks.grok_web_asset },
+      grok_console_asset: { ...defaults.grok_console_asset, ...value.fallbacks.grok_console_asset },
     },
   };
+}
+
+async function testAllEgressNodes() {
+  const nodes = await listAllEgressNodes();
+  const ids = nodes.items.filter((node) => node.enabled && node.proxyConfigured).map((node) => node.id);
+  const result = { requested: 0, healthy: 0, unhealthy: 0, failed: 0 };
+  let firstError: unknown;
+  for (let index = 0; index < ids.length; index += egressProbeBatchSize) {
+    const batchIDs = ids.slice(index, index + egressProbeBatchSize);
+    try {
+      const batch = await testEgressNodes(batchIDs);
+      result.requested += batch.requested;
+      result.healthy += batch.healthy;
+      result.unhealthy += batch.unhealthy;
+    } catch (error) {
+      firstError ??= error;
+      result.failed += batchIDs.length;
+    }
+  }
+  if (result.requested === 0 && result.failed > 0) {
+    throw firstError;
+  }
+  return result;
 }
 
 export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
@@ -94,6 +124,15 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
     void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
     void queryClient.invalidateQueries({ queryKey: ["egress-operations"] });
   };
+  const testAll = useMutation({
+    mutationFn: testAllEgressNodes,
+    onSuccess: (value) => {
+      if (value.failed > 0) toast.warning(t("settings.egress.testedPartial", value));
+      else toast.success(t("settings.egress.tested", value));
+    },
+    onError: showError,
+    onSettled: invalidate,
+  });
   const rebalance = useMutation({
     mutationFn: rebalanceEgressAccounts,
     onSuccess: (value) => { invalidate(); toast.success(t("settings.egress.rebalanced", value)); },
@@ -123,6 +162,7 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
     <section className="space-y-8">
       <div className="space-y-3">
         <OperationSectionHeader title={t("settings.egress.automation")} help={t("settings.egress.automationHelp")}>
+          <ActionTooltip label={t("settings.egress.testAllHelp")}><Button type="button" size="sm" variant="secondary" disabled={testAll.isPending} onClick={() => testAll.mutate()}>{testAll.isPending ? <Spinner /> : <Network />}{t("settings.egress.testAll")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.rebalanceHelp")}><Button type="button" size="sm" variant="secondary" disabled={rebalance.isPending} onClick={() => rebalance.mutate()}>{rebalance.isPending ? <Spinner /> : <Shuffle />}{t("settings.egress.rebalance")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
         </OperationSectionHeader>
@@ -210,7 +250,7 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState("");
-  const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: listEgressSources });
+  const sourcesQuery = useQuery({ queryKey: ["egress-sources"], queryFn: () => listEgressSources() });
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
@@ -277,6 +317,7 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
                   { value: "grok_web", label: scopeLabel("grok_web") },
                   { value: "grok_console", label: scopeLabel("grok_console") },
                   { value: "grok_web_asset", label: scopeLabel("grok_web_asset") },
+                  { value: "grok_console_asset", label: scopeLabel("grok_console_asset") },
                 ],
               }]} />
             </div>
@@ -338,11 +379,13 @@ function nodeCooling(node: EgressNodeDTO): boolean {
 }
 
 function supportsFallbackScope(nodeScope: EgressScope, requestScope: EgressScope): boolean {
-  return nodeScope === requestScope || ((requestScope === "grok_console" || requestScope === "grok_web_asset") && nodeScope === "grok_web");
+  if (nodeScope === requestScope) return true;
+  if (requestScope === "grok_console" || requestScope === "grok_web_asset") return nodeScope === "grok_web";
+  return requestScope === "grok_console_asset" && (nodeScope === "grok_console" || nodeScope === "grok_web");
 }
 
 function ScopeSelect({ value, onChange, scopeLabel }: { value: EgressScope; onChange: (value: EgressScope) => void; scopeLabel: (scope: EgressScope) => string }) {
-  return <Select value={value} onValueChange={(next) => onChange(next as EgressScope)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{(["grok_build", "grok_web", "grok_console", "grok_web_asset"] as EgressScope[]).map((scope) => <SelectItem key={scope} value={scope}>{scopeLabel(scope)}</SelectItem>)}</SelectContent></Select>;
+  return <Select value={value} onValueChange={(next) => onChange(next as EgressScope)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{fallbackScopes.map((scope) => <SelectItem key={scope} value={scope}>{scopeLabel(scope)}</SelectItem>)}</SelectContent></Select>;
 }
 
 function OperationSectionHeader({ title, help, children }: { title: string; help: string; children?: ReactNode }) {

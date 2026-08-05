@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
@@ -43,6 +43,7 @@ import {
   previewCleanup,
   enableWebAccountNSFW,
   convertWebAccountsToBuild,
+  detectBuildAccounts,
   exportAccountBatch,
   exportSelectedAccounts,
   getAccountSummary,
@@ -68,6 +69,7 @@ import {
   syncWebAccountsToConsole,
   updateAccount,
   updateAccountsEnabled,
+  updateAccountsMaxConcurrent,
   type AccountDTO,
   type AccountCleanupStatus,
   type AccountProvider,
@@ -77,6 +79,7 @@ import {
   type AccountTaskProgressDTO,
   type BuildConversionInput,
   type BuildConversionStrategy,
+  type BuildDetectItemDTO,
   type WebConsoleSyncInput,
   type WebAccountScriptActions,
   type WebAccountScriptsInput,
@@ -87,7 +90,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountNameCell } from "@/features/accounts/account-name-cell";
 import { WebAccountScriptsDialog } from "@/features/accounts/web-account-scripts";
 import { WebAccountSettingsDialogs, WebAccountSettingsMenu, type WebAccountConfirmationTarget } from "@/features/accounts/web-account-settings";
-import { assignEgressAccounts, listAllEgressNodes, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
+import { assignEgressAccounts, listAllEgressNodes, listEgressNodes, listEgressSources, unassignEgressAccounts, type EgressScope } from "@/features/settings/settings-api";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -101,6 +104,12 @@ type BuildConversionProgressState = {
 type WebConversionTarget = "build" | "console";
 type BuildQuotaTask = "sync" | "reset";
 type EgressConfigurationTask = "bind" | "unbind";
+type BuildDetectCounts = Record<BuildDetectItemDTO["outcome"], number>;
+
+const emptyBuildDetectCounts = (): BuildDetectCounts => ({ ok: 0, invalid: 0, failed: 0 });
+
+const egressFilterNodePageSize = 100;
+const egressFilterSourcePageSize = 100;
 
 type AccountSelection = {
   provider: AccountProvider;
@@ -113,6 +122,8 @@ export function AccountsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const quickImportFileInputRef = useRef<HTMLInputElement>(null);
   const quotaSyncAbortRef = useRef<AbortController | null>(null);
+  const detectAbortRef = useRef<AbortController | null>(null);
+  const detectOutcomeByIDRef = useRef(new Map<string, BuildDetectItemDTO["outcome"]>());
   const renewalAbortRef = useRef<AbortController | null>(null);
   const conversionAbortRef = useRef<AbortController | null>(null);
   const webConsoleSyncAbortRef = useRef<AbortController | null>(null);
@@ -126,6 +137,9 @@ export function AccountsPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [egressFilter, setEgressFilter] = useState("");
+  const [egressFilterSelectedLabel, setEgressFilterSelectedLabel] = useState("");
+  const [egressFilterOptionsOpen, setEgressFilterOptionsOpen] = useState(false);
+  const [egressFilterOptionsSearch, setEgressFilterOptionsSearch] = useState("");
   const [renewalFilter, setRenewalFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
   const [agreementFilter, setAgreementFilter] = useState("");
@@ -133,6 +147,8 @@ export function AccountsPage() {
   const [sort, setSort] = useState<TableSort>({ field: "createdAt", order: "desc" });
   const [selection, setSelection] = useState<AccountSelection>(() => ({ provider: "grok_build", ids: new Set() }));
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [batchConcurrencyOpen, setBatchConcurrencyOpen] = useState(false);
+  const [batchMaxConcurrent, setBatchMaxConcurrent] = useState("1");
   const [batchQuotaTaskOpen, setBatchQuotaTaskOpen] = useState(false);
   const [batchQuotaTask, setBatchQuotaTask] = useState<BuildQuotaTask>("sync");
   const [egressConfigurationOpen, setEgressConfigurationOpen] = useState(false);
@@ -153,8 +169,13 @@ export function AccountsPage() {
   const [exportBatchNumber, setExportBatchNumber] = useState(1);
   const [exportCompletedCount, setExportCompletedCount] = useState(0);
   const [syncAllOpen, setSyncAllOpen] = useState(false);
+  const [detectDialogOpen, setDetectDialogOpen] = useState(false);
+  const [detectMode, setDetectMode] = useState<"selected" | "all">("all");
   const [allQuotaTask, setAllQuotaTask] = useState<BuildQuotaTask>("sync");
   const [quotaSyncProgress, setQuotaSyncProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [detectProgress, setDetectProgress] = useState<AccountTaskProgressDTO | null>(null);
+  const [detectItems, setDetectItems] = useState<BuildDetectItemDTO[]>([]);
+  const [detectCounts, setDetectCounts] = useState<BuildDetectCounts>(emptyBuildDetectCounts);
   const [webConversionTargets, setWebConversionTargets] = useState<string[] | "all" | null>(null);
   const [webConversionTarget, setWebConversionTarget] = useState<WebConversionTarget>("build");
   const [webConversionStrategy, setWebConversionStrategy] = useState<BuildConversionStrategy>("missing");
@@ -177,9 +198,11 @@ export function AccountsPage() {
   const [quickImportTokens, setQuickImportTokens] = useState("");
   const [webConfirmationTarget, setWebConfirmationTarget] = useState<WebAccountConfirmationTarget | null>(null);
   const debouncedSearch = useDebouncedValue(search);
+  const debouncedEgressFilterOptionsSearch = useDebouncedValue(egressFilterOptionsSearch);
 
   useEffect(() => () => {
     quotaSyncAbortRef.current?.abort();
+    detectAbortRef.current?.abort();
     renewalAbortRef.current?.abort();
     conversionAbortRef.current?.abort();
     webConsoleSyncAbortRef.current?.abort();
@@ -230,10 +253,70 @@ export function AccountsPage() {
     queryKey: ["accounts", "summary"],
     queryFn: getAccountSummary,
   });
+  // The binding dialog still needs every compatible node, but only while open.
   const egressNodesQuery = useQuery({
     queryKey: ["egress-nodes", "account-binding"],
     queryFn: () => listAllEgressNodes(),
     enabled: egressConfigurationOpen && egressConfigurationTask === "bind",
+    staleTime: 60_000,
+  });
+  // Filter choices are loaded only when the third-level menu opens. Nodes and
+  // subscription sources use bounded pages so large pools do not flood the page.
+  const egressFilterPrimaryScope = accountProviderPrimaryEgressScope(provider);
+  const egressFilterNodesQuery = useInfiniteQuery({
+    queryKey: ["egress-nodes", "account-filter", egressFilterPrimaryScope, debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressNodes({
+      page: pageParam,
+      pageSize: egressFilterNodePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: egressFilterPrimaryScope,
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  // Console routing supports both native Console exits and Grok Web exits. Keep
+  // the second scope independently paginated so unrelated Build/asset nodes can
+  // never consume the Console result pages.
+  const egressFilterConsoleWebNodesQuery = useInfiniteQuery({
+    queryKey: ["egress-nodes", "account-filter", "console-web", debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressNodes({
+      page: pageParam,
+      pageSize: egressFilterNodePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: "grok_web",
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen && provider === "grok_console",
+    staleTime: 60_000,
+  });
+  const egressFilterSourcesQuery = useInfiniteQuery({
+    queryKey: ["egress-sources", "account-filter", egressFilterPrimaryScope, debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressSources({
+      page: pageParam,
+      pageSize: egressFilterSourcePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: egressFilterPrimaryScope,
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen,
+    staleTime: 60_000,
+  });
+  const egressFilterConsoleWebSourcesQuery = useInfiniteQuery({
+    queryKey: ["egress-sources", "account-filter", "console-web", debouncedEgressFilterOptionsSearch],
+    queryFn: ({ pageParam }) => listEgressSources({
+      page: pageParam,
+      pageSize: egressFilterSourcePageSize,
+      search: debouncedEgressFilterOptionsSearch,
+      scope: "grok_web",
+    }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+    enabled: egressFilterOptionsOpen && provider === "grok_console",
+    staleTime: 60_000,
   });
 
   const invalidateAccountData = useCallback(() => {
@@ -645,6 +728,17 @@ export function AccountsPage() {
     onError: showError,
   });
 
+  const batchConcurrencyMutation = useMutation({
+    mutationFn: (maxConcurrent: number) => updateAccountsMaxConcurrent([...selected], maxConcurrent, provider),
+    onSuccess: () => {
+      setBatchConcurrencyOpen(false);
+      clearSelection();
+      invalidateAccountData();
+      toast.success(t("accounts.batchConcurrencyUpdated"));
+    },
+    onError: showError,
+  });
+
   const batchBillingMutation = useMutation({
     mutationFn: () => refreshAccountsQuota([...selected], provider),
     onSuccess: (result) => {
@@ -655,6 +749,72 @@ export function AccountsPage() {
     },
     onError: showError,
   });
+
+  const appendDetectItem = useCallback((item: BuildDetectItemDTO) => {
+    const previousOutcome = detectOutcomeByIDRef.current.get(item.id);
+    detectOutcomeByIDRef.current.set(item.id, item.outcome);
+    if (previousOutcome !== item.outcome) {
+      setDetectCounts((previous) => ({
+        ...previous,
+        ...(previousOutcome ? { [previousOutcome]: Math.max(0, previous[previousOutcome] - 1) } : {}),
+        [item.outcome]: previous[item.outcome] + 1,
+      }));
+    }
+    setDetectItems((prev) => {
+      const next = prev.filter((entry) => entry.id !== item.id);
+      next.unshift(item);
+      return next.slice(0, 200);
+    });
+  }, []);
+
+  const detectMutation = useMutation({
+    mutationFn: (mode: "selected" | "all") => {
+      const controller = new AbortController();
+      detectAbortRef.current = controller;
+      setDetectProgress(null);
+      detectOutcomeByIDRef.current.clear();
+      setDetectCounts(emptyBuildDetectCounts());
+      setDetectItems([]);
+      const handlers = {
+        onProgress: setDetectProgress,
+        onItem: appendDetectItem,
+      };
+      if (mode === "all") {
+        return detectBuildAccounts({ all: true }, handlers, controller.signal);
+      }
+      return detectBuildAccounts({ ids: [...selected] }, handlers, controller.signal);
+    },
+    onSuccess: (result, mode) => {
+      if (mode === "selected") clearSelection();
+      toast.success(t(mode === "all" ? "accounts.allDetected" : "accounts.batchDetected", result));
+    },
+    onError: (error) => { if (!isAbortError(error)) showError(error); },
+    onSettled: () => {
+      detectAbortRef.current = null;
+      invalidateAccountData();
+    },
+  });
+
+  const openDetectDialog = (mode: "selected" | "all") => {
+    setDetectMode(mode);
+    setDetectProgress(null);
+    detectOutcomeByIDRef.current.clear();
+    setDetectCounts(emptyBuildDetectCounts());
+    setDetectItems([]);
+    setDetectDialogOpen(true);
+  };
+
+  const closeDetectDialog = (open: boolean) => {
+    if (!open) {
+      if (detectMutation.isPending) detectAbortRef.current?.abort();
+      setDetectDialogOpen(false);
+      setDetectProgress(null);
+      // 保留结果列表直到下次打开，便于查看完成摘要；关闭后清空避免残留。
+      if (!detectMutation.isPending) setDetectItems([]);
+      return;
+    }
+    setDetectDialogOpen(true);
+  };
 
   const batchQuotaResetMutation = useMutation({
     mutationFn: () => resetAccountsQuota([...selected], provider),
@@ -841,6 +1001,12 @@ export function AccountsPage() {
     setSelection({ provider: value, ids: new Set() });
     setTypeFilter("");
     setStatusFilter("");
+    // A node or subscription narrowing belongs to the previous pool's scope;
+    // keep the plain bound filter and drop the target.
+    setEgressFilter((current) => (current.includes(":") ? "bound" : current));
+    setEgressFilterSelectedLabel("");
+    setEgressFilterOptionsOpen(false);
+    setEgressFilterOptionsSearch("");
     setRenewalFilter("");
     setRiskFilter("");
     setAgreementFilter("");
@@ -1017,6 +1183,56 @@ export function AccountsPage() {
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
   const hasProviderAccounts = providerAccountTotal > 0 || (result?.total ?? 0) > 0;
   const bindableEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => node.enabled && node.proxyConfigured && scopeSupportsAccountProvider(node.scope, provider));
+  const egressFilterSearchTerm = egressFilterOptionsSearch.trim().toLocaleLowerCase();
+  const consoleWebNodePages = provider === "grok_console" ? (egressFilterConsoleWebNodesQuery.data?.pages ?? []) : [];
+  const scopedEgressNodes = [...(egressFilterNodesQuery.data?.pages ?? []), ...consoleWebNodePages]
+    .flatMap((nodePage) => nodePage.items)
+    .filter((node) => scopeSupportsAccountProvider(node.scope, provider))
+    .filter((node) => !egressFilterSearchTerm || node.name.toLocaleLowerCase().includes(egressFilterSearchTerm));
+  const consoleWebNodesEnabled = provider === "grok_console";
+  const consoleWebSourcePages = consoleWebNodesEnabled ? (egressFilterConsoleWebSourcesQuery.data?.pages ?? []) : [];
+  const scopedEgressSources = [...(egressFilterSourcesQuery.data?.pages ?? []), ...consoleWebSourcePages]
+    .flatMap((sourcePage) => sourcePage.items)
+    .filter((source) => scopeSupportsAccountProvider(source.scope, provider))
+    .filter((source) => !egressFilterSearchTerm || source.name.toLocaleLowerCase().includes(egressFilterSearchTerm));
+  const egressFilterNodesFailed = egressFilterNodesQuery.isError || (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.isError);
+  const egressFilterNodesFetching = egressFilterNodesQuery.isFetching || (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.isFetching);
+  const egressFilterNodesHaveMore = egressFilterNodesFailed || egressFilterNodesQuery.hasNextPage || (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.hasNextPage);
+  const loadMoreEgressFilterNodes = () => {
+    if (egressFilterNodesQuery.isError) void egressFilterNodesQuery.refetch();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.isError) void egressFilterConsoleWebNodesQuery.refetch();
+    if (egressFilterNodesFailed) return;
+    if (egressFilterNodesQuery.hasNextPage) void egressFilterNodesQuery.fetchNextPage();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebNodesQuery.hasNextPage) void egressFilterConsoleWebNodesQuery.fetchNextPage();
+  };
+  const egressFilterSourcesFailed = egressFilterSourcesQuery.isError || (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.isError);
+  const egressFilterSourcesFetching = egressFilterSourcesQuery.isFetching || (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.isFetching);
+  const egressFilterSourcesHaveMore = egressFilterSourcesFailed || egressFilterSourcesQuery.hasNextPage || (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.hasNextPage);
+  const loadMoreEgressFilterSources = () => {
+    if (egressFilterSourcesQuery.isError) void egressFilterSourcesQuery.refetch();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.isError) void egressFilterConsoleWebSourcesQuery.refetch();
+    if (egressFilterSourcesFailed) return;
+    if (egressFilterSourcesQuery.hasNextPage) void egressFilterSourcesQuery.fetchNextPage();
+    if (consoleWebNodesEnabled && egressFilterConsoleWebSourcesQuery.hasNextPage) void egressFilterConsoleWebSourcesQuery.fetchNextPage();
+  };
+  const egressBoundGroups = [
+    {
+      id: "nodes", label: t("accounts.egressNodeGroup"),
+      emptyLabel: egressFilterNodesFailed ? t("accounts.egressFilterOptionsLoadFailed") : egressFilterNodesFetching ? t("common.loading") : t("accounts.egressNodeGroupEmpty"),
+      options: scopedEgressNodes.map((node) => ({ value: `node:${node.id}`, label: node.name })),
+      loading: egressFilterNodesFetching, hasMore: egressFilterNodesHaveMore,
+      actionLabel: egressFilterNodesFailed ? t("common.retry") : egressFilterNodesFetching ? t("common.loading") : t("accounts.egressFilterOptionsLoadMore"),
+      onAction: loadMoreEgressFilterNodes,
+    },
+    {
+      id: "sources", label: t("accounts.egressSourceGroup"),
+      emptyLabel: egressFilterSourcesFailed ? t("accounts.egressFilterOptionsLoadFailed") : egressFilterSourcesFetching ? t("common.loading") : t("accounts.egressSourceGroupEmpty"),
+      options: scopedEgressSources.map((source) => ({ value: `source:${source.id}`, label: source.name })),
+      loading: egressFilterSourcesFetching, hasMore: egressFilterSourcesHaveMore,
+      actionLabel: egressFilterSourcesFailed ? t("common.retry") : egressFilterSourcesFetching ? t("common.loading") : t("accounts.egressFilterSourcesLoadMore"),
+      onAction: loadMoreEgressFilterSources,
+    },
+  ];
   const bulkTaskPending = quotaSyncMutation.isPending
     || allQuotaResetMutation.isPending
     || allTokenMutation.isPending
@@ -1024,7 +1240,9 @@ export function AccountsPage() {
     || webConsoleSyncMutation.isPending
     || importMutation.isPending
     || batchUpdateMutation.isPending
+    || batchConcurrencyMutation.isPending
     || batchBillingMutation.isPending
+    || detectMutation.isPending
     || batchQuotaResetMutation.isPending
     || batchTokenMutation.isPending
     || batchDeleteMutation.isPending
@@ -1033,6 +1251,9 @@ export function AccountsPage() {
     || cleanupMutation.isPending
     || webConfirmationMutation.isPending
     || webAccountScriptsMutation.isPending;
+
+  const detectInvalidItems = detectItems.filter((item) => item.outcome === "invalid");
+  const detectVisibleItems = detectMode === "selected" ? detectItems : detectInvalidItems;
 
   return (
     <div className="space-y-5">
@@ -1133,8 +1354,20 @@ export function AccountsPage() {
                   { value: "waitingReset", label: t("accounts.waitingReset") },
                   { value: "probing", label: t("accounts.probing") },
                 ] },
-                { id: "egress", label: t("accounts.egressFilter"), value: egressFilter, onChange: (value) => { setEgressFilter(value); setPage(1); }, options: [
-                  { value: "bound", label: t("accounts.egressBound") },
+                { id: "egress", label: t("accounts.egressFilter"), value: egressFilter, selectedLabel: egressFilterSelectedLabel || undefined, onChange: (value) => {
+                  setEgressFilter(value);
+                  setEgressFilterSelectedLabel(value.includes(":")
+                    ? egressBoundGroups.flatMap((group) => group.options).find((option) => option.value === value)?.label ?? ""
+                    : "");
+                  setPage(1);
+                }, options: [
+                  {
+                    value: "bound", label: t("accounts.egressBound"), groups: egressBoundGroups,
+                    onGroupsOpenChange: setEgressFilterOptionsOpen,
+                    groupSearch: { value: egressFilterOptionsSearch, placeholder: t("accounts.egressFilterOptionsSearch"), onChange: (value) => {
+                      setEgressFilterOptionsSearch(value);
+                    } },
+                  },
                   { value: "unbound", label: t("accounts.egressUnbound") },
                 ] },
                 ...(provider === "grok_build" ? [{ id: "renewal", label: t("accountCredential.label"), value: renewalFilter, onChange: (value: string) => { setRenewalFilter(value); setPage(1); }, options: [
@@ -1173,12 +1406,17 @@ export function AccountsPage() {
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(true)}>{t("common.enable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => batchUpdateMutation.mutate(false)}>{t("common.disable")}</Button>
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
+                  setBatchMaxConcurrent("1");
+                  setBatchConcurrencyOpen(true);
+                }}>{t("accounts.batchSetConcurrency")}</Button>
+                <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
                   setEgressNodeID("");
                   setEgressConfigurationTask("bind");
                   setEgressConfigurationOpen(true);
                 }}>{t("accounts.egressConfiguration")}</Button>
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion([...selected])}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets([...selected])}>{t("webAccountScripts.action")}</Button> : null}
+                {provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openDetectDialog("selected")}>{t("accountCredential.detectAction")}</Button> : null}
                 <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => {
                   if (provider === "grok_build") {
                     setBatchQuotaTask("sync");
@@ -1194,6 +1432,7 @@ export function AccountsPage() {
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openWebConversion("all")}>{t("accountConversion.action")}</Button> : null}
                 {provider === "grok_web" && hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setWebAccountScriptsTargets("all")}>{t("webAccountScripts.action")}</Button> : null}
+                {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => openDetectDialog("all")}>{t("accountCredential.detectAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => { setAllQuotaTask("sync"); setSyncAllOpen(true); }}>{t("accountCredential.quotaSyncAction")}</Button> : null}
                 {hasProviderAccounts && provider === "grok_build" ? <Button variant="secondary" size="sm" disabled={bulkTaskPending} onClick={() => setRenewAllOpen(true)}>{t("accountCredential.refreshAction")}</Button> : null}
                 {hasProviderAccounts ? <Button variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={bulkTaskPending} onClick={() => { resetCleanupState(); setCleanupOpen(true); }}><Trash2 />{t("accounts.cleanupAction")}</Button> : null}
@@ -1334,6 +1573,86 @@ export function AccountsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={detectDialogOpen} onOpenChange={closeDetectDialog}>
+        <DialogContent className="max-w-xl gap-4 sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{detectMode === "all" ? t("accounts.detectAllTitle") : t("accounts.detectSelectedTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{detectMode === "all" ? t("accounts.detectAllDescription") : t("accounts.detectSelectedDescription", { count: selected.size })}</DialogDescription>
+          </DialogHeader>
+          {(detectMutation.isPending || detectProgress || detectVisibleItems.length > 0) ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">{t("accounts.detectProgressLabel")}</span>
+                <span className="tabular-nums font-medium">
+                  {detectProgress ? `${detectProgress.completed} / ${detectProgress.total}` : detectMutation.isPending ? t("common.loading") : "—"}
+                </span>
+              </div>
+              {detectMode === "all" && detectCounts.invalid > 0 ? (
+                <p className="text-xs text-muted-foreground">{t("accounts.detectInvalidCount", { count: detectCounts.invalid })}</p>
+              ) : null}
+              {detectMode === "selected" && (detectCounts.ok + detectCounts.invalid + detectCounts.failed) > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {t("accounts.detectSelectedSummary", {
+                    ok: detectCounts.ok,
+                    invalid: detectCounts.invalid,
+                    failed: detectCounts.failed,
+                  })}
+                </p>
+              ) : null}
+              {(detectCounts.ok + detectCounts.invalid + detectCounts.failed) > detectVisibleItems.length ? (
+                <p className="text-xs text-muted-foreground">{t("accounts.detectResultsLimited", { count: 200 })}</p>
+              ) : null}
+              <div className="max-h-64 overflow-y-auto rounded-md border">
+                {detectVisibleItems.length === 0 ? (
+                  <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                    {detectMutation.isPending
+                      ? t(detectMode === "all" ? "accounts.detectWaitingInvalid" : "accounts.detectWaitingResults")
+                      : t(detectMode === "all" ? "accounts.detectNoInvalid" : "accounts.detectNoResults")}
+                  </div>
+                ) : (
+                  <ul className="divide-y">
+                    {detectVisibleItems.map((item) => (
+                      <li key={`${item.id}-${item.outcome}-${item.reason ?? ""}`} className="flex items-start gap-3 px-3 py-2 text-sm">
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "mt-0.5 shrink-0",
+                            item.outcome === "ok" && "border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
+                            item.outcome === "invalid" && "border-destructive/40 text-destructive",
+                            item.outcome === "failed" && "border-amber-500/40 text-amber-700 dark:text-amber-300",
+                          )}
+                        >
+                          {t(`accounts.detectOutcome.${item.outcome}`)}
+                        </Badge>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">{item.name || item.id}</div>
+                          {item.email ? <div className="truncate text-xs text-muted-foreground">{item.email}</div> : null}
+                          {item.reason ? <div className="mt-0.5 break-all text-xs text-muted-foreground">{item.reason}</div> : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => closeDetectDialog(false)}>{detectMutation.isPending ? t("common.cancel") : t("common.close")}</Button>
+            <Button
+              disabled={detectMutation.isPending || (detectMode === "selected" && selected.size === 0)}
+              onClick={() => detectMutation.mutate(detectMode)}
+            >
+              {detectMutation.isPending ? (
+                <>
+                  <Spinner />
+                  {detectProgress ? <span className="tabular-nums">{detectProgress.completed} / {detectProgress.total}</span> : t("common.loading")}
+                </>
+              ) : t("accounts.detectAll")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={webConversionTargets !== null} onOpenChange={(open) => { if (!open) closeWebConversion(); }}>
         <AlertDialogContent>
@@ -1612,6 +1931,42 @@ export function AccountsPage() {
             }}>{t("accounts.deleteConfirm")}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={batchConcurrencyOpen} onOpenChange={(open) => {
+        if (!open && batchConcurrencyMutation.isPending) return;
+        setBatchConcurrencyOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>{t("accounts.batchConcurrencyTitle", { count: selected.size })}</DialogTitle>
+            <DialogDescription>{t("accounts.batchConcurrencyDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="batch-account-concurrency">{t("accounts.maxConcurrent")}</Label>
+            <Input
+              id="batch-account-concurrency"
+              type="number"
+              min="1"
+              max="256"
+              value={batchMaxConcurrent}
+              disabled={batchConcurrencyMutation.isPending}
+              onChange={(event) => setBatchMaxConcurrent(event.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="secondary" size="sm" disabled={batchConcurrencyMutation.isPending} onClick={() => setBatchConcurrencyOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={batchConcurrencyMutation.isPending || !Number.isInteger(Number(batchMaxConcurrent)) || Number(batchMaxConcurrent) < 1 || Number(batchMaxConcurrent) > 256}
+              onClick={() => batchConcurrencyMutation.mutate(Number(batchMaxConcurrent))}
+            >
+              {batchConcurrencyMutation.isPending ? <Spinner /> : null}
+              {t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={batchDeleteOpen} onOpenChange={(open) => {
         if (!open && batchDeleteMutation.isPending) return;
@@ -1905,6 +2260,10 @@ function scopeSupportsAccountProvider(scope: EgressScope, provider: AccountProvi
   return scope === "grok_web" || scope === "grok_console";
 }
 
+function accountProviderPrimaryEgressScope(provider: AccountProvider): EgressScope {
+  return provider;
+}
+
 function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: string; loading: boolean; tone: string }) {
   return (
     <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
@@ -1948,7 +2307,21 @@ function AccountStatus({ account }: { account: AccountDTO }) {
     return <Badge variant="outline" className="text-muted-foreground">{t("accounts.statusDisabled")}</Badge>;
   }
   if (account.authStatus === "reauthRequired") {
-    return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
+    const refreshErrorDetails = formatAdditionalRefreshErrorDetails(account);
+    const hasRefreshError = Boolean(account.lastRefreshErrorStatus || account.lastRefreshErrorCode || account.lastRefreshErrorMessage || refreshErrorDetails);
+    if (!hasRefreshError) return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
+    return (
+      <StatusTooltip content={(
+        <div className="grid w-72 max-w-[calc(100vw-2rem)] grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs font-normal leading-5">
+          {account.lastRefreshErrorStatus ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorStatus")}</span><span>{account.lastRefreshErrorStatus}</span></> : null}
+          {account.lastRefreshErrorCode ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorCode")}</span><span className="break-all">{account.lastRefreshErrorCode}</span></> : null}
+          {account.lastRefreshErrorMessage ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorMessage")}</span><span className="break-words">{account.lastRefreshErrorMessage}</span></> : null}
+          {refreshErrorDetails ? <><span className="text-primary-foreground/60">{t("accounts.refreshErrorResponse")}</span><span className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{refreshErrorDetails}</span></> : null}
+        </div>
+      )}>
+        <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>
+      </StatusTooltip>
+    );
   }
   const consoleWindow = account.provider === "grok_console"
     ? account.quotaWindows?.find((window) => window.mode === "console" && window.remaining <= 0)
@@ -1986,13 +2359,41 @@ function AccountStatus({ account }: { account: AccountDTO }) {
   return <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("accounts.statusActive")}</Badge>;
 }
 
-function StatusTooltip({ children, content }: { children: ReactNode; content: string }) {
+function formatAdditionalRefreshErrorDetails(account: AccountDTO): string | undefined {
+  const response = account.lastRefreshErrorResponse?.trim();
+  if (!response) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(response);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return response;
+    const details = { ...(parsed as Record<string, unknown>) };
+    const messages = new Set((account.lastRefreshErrorMessage ?? "").split(" · ").map((value) => value.trim()).filter(Boolean));
+    if (typeof details.error === "string" && details.error === account.lastRefreshErrorCode) delete details.error;
+    for (const key of ["error_description", "message", "detail", "description", "title"]) {
+      if (typeof details[key] === "string" && messages.has(details[key])) delete details[key];
+    }
+    if (details.error && typeof details.error === "object" && !Array.isArray(details.error)) {
+      const nested = { ...(details.error as Record<string, unknown>) };
+      if (typeof nested.code === "string" && nested.code === account.lastRefreshErrorCode) delete nested.code;
+      for (const key of ["error_description", "message", "detail", "description"]) {
+        if (typeof nested[key] === "string" && messages.has(nested[key])) delete nested[key];
+      }
+      if (Object.keys(nested).length === 0) delete details.error;
+      else details.error = nested;
+    }
+    if (Object.keys(details).length === 0) return undefined;
+    return JSON.stringify(details, null, 2);
+  } catch {
+    return response;
+  }
+}
+
+function StatusTooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span tabIndex={0} className="inline-flex cursor-help">{children}</span>
       </TooltipTrigger>
-      <TooltipContent className="max-w-72">{content}</TooltipContent>
+      <TooltipContent className="w-max max-w-sm">{content}</TooltipContent>
     </Tooltip>
   );
 }

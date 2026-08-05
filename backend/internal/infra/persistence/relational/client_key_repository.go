@@ -13,13 +13,26 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type ClientKeyRepository struct{ db *Database }
+type ClientKeyRepository struct {
+	db       *Database
+	observer repository.InvalidationObserver
+}
 
 func NewClientKeyRepository(db *Database) *ClientKeyRepository { return &ClientKeyRepository{db: db} }
 
+func (r *ClientKeyRepository) SetInvalidationObserver(observer repository.InvalidationObserver) {
+	r.observer = observer
+}
+
+func (r *ClientKeyRepository) notifyInvalidation(ctx context.Context, clientKeyID uint64) {
+	if r.observer != nil {
+		r.observer(ctx, repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: clientKeyID})
+	}
+}
+
 func (r *ClientKeyRepository) List(ctx context.Context, input repository.ClientKeyListQuery) ([]clientkey.Key, int64, error) {
 	var total int64
-	query := r.db.db.WithContext(ctx).Model(&clientKeyModel{})
+	query := r.db.db.WithContext(ctx).Model(&clientKeyModel{}).Where("internal_kind IS NULL")
 	if search := strings.TrimSpace(input.Page.Search); search != "" {
 		pattern := "%" + strings.ToLower(search) + "%"
 		query = query.Where("LOWER(name) LIKE ? OR LOWER(prefix) LIKE ?", pattern, pattern)
@@ -53,7 +66,7 @@ func (r *ClientKeyRepository) List(ctx context.Context, input repository.ClientK
 		"expiresAt":     {expression: "client_keys.expires_at", nullsLast: true, defaultDirection: repository.SortDescending},
 		"lastUsedAt":    {expression: "client_keys.last_used_at", nullsLast: true, defaultDirection: repository.SortDescending},
 	}, sortSpec{expression: "client_keys.created_at", defaultDirection: repository.SortDescending}, "client_keys.id")
-	if err := query.Select("id", "name", "prefix", "enabled", "expires_at", "rpm_limit", "max_concurrent", "billing_limit_usd_ticks", "billed_usage_usd_ticks", "reserved_usage_usd_ticks", "last_used_at", "created_at", "updated_at").Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
+	if err := query.Select("id", "name", "prefix", "enabled", "expires_at", "rpm_limit", "max_concurrent", "billing_limit_usd_ticks", "billed_usage_usd_ticks", "reserved_usage_usd_ticks", "allow_model_aliases", "provider_scope_mask", "tier_scope_mask", "last_used_at", "created_at", "updated_at").Offset(input.Page.Offset).Limit(input.Page.Limit).Find(&rows).Error; err != nil {
 		return nil, 0, err
 	}
 	ids := make([]uint64, 0, len(rows))
@@ -75,12 +88,24 @@ func (r *ClientKeyRepository) UpdateManyEnabled(ctx context.Context, ids []uint6
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := r.db.db.WithContext(ctx).Model(&clientKeyModel{}).Where("id IN ?", ids).Update("enabled", enabled)
+	result := r.db.db.WithContext(ctx).Model(&clientKeyModel{}).Where("id IN ? AND internal_kind IS NULL", ids).Update("enabled", enabled)
+	if result.Error == nil && result.RowsAffected > 0 {
+		r.notifyInvalidation(ctx, 0)
+	}
 	return result.RowsAffected, result.Error
 }
 
 func (r *ClientKeyRepository) Create(ctx context.Context, value clientkey.Key) (clientkey.Key, error) {
-	row := clientKeyModel{Name: value.Name, Prefix: value.Prefix, SecretHash: value.SecretHash, EncryptedSecret: value.EncryptedSecret, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, ReservedUsageUSDTicks: value.ReservedUsageUSDTicks, AllowModelAliases: value.AllowModelAliases}
+	scope, valid := clientkey.NormalizeAccountScope(clientkey.AccountScope{Providers: value.ProviderScope, Tiers: value.TierScope})
+	if !valid {
+		return clientkey.Key{}, repository.ErrConflict
+	}
+	var internalKind *string
+	if value.InternalKind != "" {
+		kind := value.InternalKind
+		internalKind = &kind
+	}
+	row := clientKeyModel{Name: value.Name, Prefix: value.Prefix, SecretHash: value.SecretHash, EncryptedSecret: value.EncryptedSecret, InternalKind: internalKind, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, ReservedUsageUSDTicks: value.ReservedUsageUSDTicks, AllowModelAliases: value.AllowModelAliases, ProviderScopeMask: uint8(scope.Providers), TierScopeMask: uint8(scope.Tiers)}
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&row).Error; err != nil {
 			return err
@@ -134,11 +159,16 @@ func (r *ClientKeyRepository) GetByPrefix(ctx context.Context, prefix string) (c
 }
 
 func (r *ClientKeyRepository) Update(ctx context.Context, value clientkey.Key) (clientkey.Key, error) {
+	scope, valid := clientkey.NormalizeAccountScope(clientkey.AccountScope{Providers: value.ProviderScope, Tiers: value.TierScope})
+	if !valid {
+		return clientkey.Key{}, repository.ErrConflict
+	}
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&clientKeyModel{}).Where("id = ?", value.ID).Updates(map[string]any{
 			"name": value.Name, "enabled": value.Enabled, "expires_at": value.ExpiresAt,
 			"rpm_limit": value.RPMLimit, "max_concurrent": value.MaxConcurrent,
 			"billing_limit_usd_ticks": value.BillingLimitUSDTicks, "allow_model_aliases": value.AllowModelAliases,
+			"provider_scope_mask": uint8(scope.Providers), "tier_scope_mask": uint8(scope.Tiers),
 			"updated_at": time.Now().UTC(),
 		})
 		if result.Error != nil {
@@ -152,6 +182,7 @@ func (r *ClientKeyRepository) Update(ctx context.Context, value clientkey.Key) (
 	if err != nil {
 		return clientkey.Key{}, mapError(err)
 	}
+	r.notifyInvalidation(ctx, value.ID)
 	return r.Get(ctx, value.ID)
 }
 
@@ -163,6 +194,7 @@ func (r *ClientKeyRepository) Delete(ctx context.Context, id uint64) error {
 	if result.RowsAffected == 0 {
 		return repository.ErrNotFound
 	}
+	r.notifyInvalidation(ctx, id)
 	return nil
 }
 
@@ -170,8 +202,20 @@ func (r *ClientKeyRepository) DeleteMany(ctx context.Context, ids []uint64) (int
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	result := r.db.db.WithContext(ctx).Where("id IN ?", ids).Delete(&clientKeyModel{})
+	result := r.db.db.WithContext(ctx).Where("id IN ? AND internal_kind IS NULL", ids).Delete(&clientKeyModel{})
+	if result.Error == nil && result.RowsAffected > 0 {
+		r.notifyInvalidation(ctx, 0)
+	}
 	return result.RowsAffected, result.Error
+}
+
+func (r *ClientKeyRepository) CountInternalKeys(ctx context.Context, ids []uint64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := r.db.db.WithContext(ctx).Model(&clientKeyModel{}).Where("id IN ? AND internal_kind IS NOT NULL", ids).Count(&count).Error
+	return count, err
 }
 
 func (r *ClientKeyRepository) Touch(ctx context.Context, id uint64) error {

@@ -225,10 +225,16 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	if err != nil || len(claimed) != 1 || claimed[0].Attempts != 3 {
 		t.Fatalf("claimed quota recoveries = %#v, err = %v", claimed, err)
 	}
+	if err := store.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: 42, Mode: "fast", DueAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelQuotaRecovery(ctx, 42, "fast"); err != nil {
+		t.Fatal(err)
+	}
 	claimed[0].Attempts++
 	claimed[0].DueAt = time.Now().UTC().Add(-time.Second)
 	if err := store.RescheduleQuotaRecovery(ctx, claimed[0]); err != nil {
-		t.Fatal(err)
+		t.Fatalf("concurrent schedule overwrote active Redis claim: %v", err)
 	}
 	claimed, err = store.ClaimDueQuotaRecoveries(ctx, time.Now().UTC(), 10, time.Minute)
 	if err != nil || len(claimed) != 1 || claimed[0].Attempts != 4 {
@@ -236,6 +242,16 @@ func TestRedisRuntimeStoreIntegration(t *testing.T) {
 	}
 	if err := store.AckQuotaRecovery(ctx, claimed[0]); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.ScheduleQuotaRecovery(ctx, account.QuotaRecoveryEvent{AccountID: 43, Mode: "console", DueAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelQuotaRecovery(ctx, 43, "console"); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := store.ClaimDueQuotaRecoveries(ctx, time.Now().UTC().Add(2*time.Hour), 10, time.Minute)
+	if err != nil || len(cancelled) != 0 {
+		t.Fatalf("cancelled Redis quota recovery was claimable: %#v, err = %v", cancelled, err)
 	}
 
 	firstGeneration, err := store.MarkQuotaRefreshDirty(ctx, 42, "fast", 200*time.Millisecond)
@@ -451,6 +467,18 @@ func TestRedisInvalidationBusIntegration(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("second invalidation notification was not delivered")
+	}
+	clientKeyEvent := repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: 42, SourceInstance: "instance-a"}
+	if err := store.PublishInvalidation(ctx, clientKeyEvent); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case clientKeyInvalidation := <-received:
+		if clientKeyInvalidation.Layer() != repository.InvalidationLayerClientKey || clientKeyInvalidation.ClientKeyID != 42 || clientKeyInvalidation.Revision == 0 {
+			t.Fatalf("client-key invalidation = %#v", clientKeyInvalidation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client-key invalidation notification was not delivered")
 	}
 	cancel()
 	if err := <-done; err != nil {

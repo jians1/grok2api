@@ -87,7 +87,10 @@ export type AccountDTO = {
   refreshDueAt?: string;
   lastRefreshAt?: string;
   refreshFailureCount: number;
+  lastRefreshErrorStatus?: number;
   lastRefreshErrorCode?: string;
+  lastRefreshErrorMessage?: string;
+  lastRefreshErrorResponse?: string;
   priority: number;
   maxConcurrent: number;
   minimumRemaining: number;
@@ -183,7 +186,7 @@ const accountValidator = hasShape({
   enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean, cloudflareCookieConfigured: isBoolean,
   buildSuperEntitled: isBoolean, buildRouteMode: isOneOf("auto", "build", "xai"), buildBotFlagged: isBoolean, modelSyncFailed: isOptional(isBoolean), refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
-  lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
+  lastRefreshErrorStatus: isOptional(isNumber), lastRefreshErrorCode: isOptional(isString), lastRefreshErrorMessage: isOptional(isString), lastRefreshErrorResponse: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), linkedAccounts: isOptional(isArrayOf(linkedAccountValidator)),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
@@ -315,6 +318,21 @@ export function enableWebAccountNSFW(id: string): Promise<{ completed: boolean }
 export type AccountBatchResultDTO = { succeeded: number; failed: number };
 export type AccountTokenRefreshResultDTO = AccountBatchResultDTO & { skipped: number };
 
+/** 管理端 Grok Build 检测的单账号增量结果（SSE event: item）。 */
+export type BuildDetectItemDTO = {
+  id: string;
+  name: string;
+  email?: string;
+  outcome: "ok" | "invalid" | "failed";
+  reason?: string;
+  httpStatus?: number;
+};
+
+export type BuildDetectHandlers = {
+  onProgress?: (value: AccountTaskProgressDTO) => void;
+  onItem?: (item: BuildDetectItemDTO) => void;
+};
+
 export type BuildConversionResultDTO = {
   created: number;
   linked: number;
@@ -361,9 +379,15 @@ export type AccountImportResultDTO = {
 
 export type WebConsoleSyncResultDTO = AccountImportResultDTO & { skipped: number };
 
-type AccountTaskStreamPayload = Partial<BuildConversionResultDTO & AccountTaskProgressDTO & AccountTokenRefreshResultDTO & AccountImportResultDTO> & {
+type AccountTaskStreamPayload = Partial<BuildConversionResultDTO & AccountTaskProgressDTO & AccountTokenRefreshResultDTO & AccountImportResultDTO & BuildDetectItemDTO> & {
   code?: string;
   message?: string;
+  outcome?: string;
+  reason?: string;
+  httpStatus?: number;
+  id?: string;
+  name?: string;
+  email?: string;
 };
 
 const decodeAccountTaskStreamPayload = createObjectDecoder<AccountTaskStreamPayload>("account task event", {
@@ -371,6 +395,8 @@ const decodeAccountTaskStreamPayload = createObjectDecoder<AccountTaskStreamPayl
   synced: isOptional(isNumber), syncFailed: isOptional(isNumber), completed: isOptional(isNumber), total: isOptional(isNumber),
   phase: isOptional(isOneOf("importing", "converting", "syncing")), updated: isOptional(isNumber), succeeded: isOptional(isNumber),
   code: isOptional(isString), message: isOptional(isString),
+  id: isOptional(isString), name: isOptional(isString), email: isOptional(isString),
+  outcome: isOptional(isOneOf("ok", "invalid", "failed")), reason: isOptional(isString), httpStatus: isOptional(isNumber),
 });
 
 function hasNumericResult(value: AccountTaskStreamPayload, fields: string[]): boolean {
@@ -445,6 +471,84 @@ async function runAccountTask<T>(path: string, body: BodyInit | object | undefin
 
 export function refreshAllAccountBilling(onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
   return runAccountTask("/api/admin/v1/accounts/refresh-billing", undefined, ["succeeded", "failed"], onProgress, signal);
+}
+
+export type DetectBuildAccountsInput =
+  | { all: true; ids?: never }
+  | { all?: false; ids: string[] };
+
+export function detectBuildAccounts(input: DetectBuildAccountsInput, handlers?: BuildDetectHandlers | ((value: AccountTaskProgressDTO) => void), signal?: AbortSignal): Promise<AccountBatchResultDTO> {
+  const body = input.all ? { provider: "grok_build" as const, all: true } : { provider: "grok_build" as const, ids: input.ids };
+  const resolved: BuildDetectHandlers = typeof handlers === "function" ? { onProgress: handlers } : (handlers ?? {});
+  return runDetectBuildAccountsTask(body, resolved, signal);
+}
+
+async function runDetectBuildAccountsTask(body: object, handlers: BuildDetectHandlers, signal?: AbortSignal): Promise<AccountBatchResultDTO> {
+  let result: AccountBatchResultDTO | undefined;
+  let pendingProgress: AccountTaskProgressDTO | undefined;
+  let progressTimer: number | undefined;
+  let lastProgressAt = 0;
+  const flushProgress = () => {
+    if (!pendingProgress || !handlers.onProgress) return;
+    const value = pendingProgress;
+    pendingProgress = undefined;
+    lastProgressAt = performance.now();
+    handlers.onProgress(value);
+  };
+  const reportProgress = (value: AccountTaskProgressDTO) => {
+    pendingProgress = value;
+    const delay = Math.max(0, 100 - (performance.now() - lastProgressAt));
+    if (delay === 0) {
+      if (progressTimer !== undefined) window.clearTimeout(progressTimer);
+      progressTimer = undefined;
+      flushProgress();
+    } else if (progressTimer === undefined) {
+      progressTimer = window.setTimeout(() => {
+        progressTimer = undefined;
+        flushProgress();
+      }, delay);
+    }
+  };
+  try {
+    await apiEventStream("/api/admin/v1/accounts/detect", {
+      method: "POST",
+      headers: { Accept: "text/event-stream" },
+      body,
+      signal,
+    }, decodeAccountTaskStreamPayload, ({ event, data }) => {
+      if (event === "progress" && typeof data.completed === "number" && typeof data.total === "number") {
+        reportProgress({ completed: data.completed, total: data.total });
+        return;
+      }
+      if (event === "item" && typeof data.id === "string" && typeof data.name === "string" && (data.outcome === "ok" || data.outcome === "invalid" || data.outcome === "failed")) {
+        handlers.onItem?.({
+          id: data.id,
+          name: data.name,
+          email: data.email,
+          outcome: data.outcome,
+          reason: data.reason,
+          httpStatus: data.httpStatus,
+        });
+        return;
+      }
+      if (event === "complete") {
+        flushProgress();
+        if (hasNumericResult(data, ["succeeded", "failed"])) result = data as AccountBatchResultDTO;
+        return;
+      }
+      if (event === "error") {
+        const code = data.code ?? "accountDetectFailed";
+        throw new ApiError(502, code, i18n.exists(`apiErrors.${code}`) ? i18n.t(`apiErrors.${code}`) : (data.message ?? i18n.t("apiErrors.requestFailed")));
+      }
+    });
+  } finally {
+    if (progressTimer !== undefined) window.clearTimeout(progressTimer);
+    flushProgress();
+  }
+  if (!result) {
+    throw new ApiError(502, "invalidResponse", i18n.t("apiErrors.invalidResponse"));
+  }
+  return result;
 }
 
 export function refreshAllAccountTokens(onProgress?: (value: AccountTaskProgressDTO) => void, signal?: AbortSignal): Promise<AccountTokenRefreshResultDTO> {
@@ -539,6 +643,10 @@ export function exportSelectedAccounts(provider: AccountProvider, ids: string[])
 
 export function updateAccountsEnabled(ids: string[], enabled: boolean, provider: AccountProvider): Promise<{ updated: number }> {
   return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, enabled, provider } }, decodeCountResult<{ updated: number }>("updated"));
+}
+
+export function updateAccountsMaxConcurrent(ids: string[], maxConcurrent: number, provider: AccountProvider): Promise<{ updated: number }> {
+  return apiRequest("/api/admin/v1/accounts/batch", { method: "PATCH", body: { ids, maxConcurrent, provider } }, decodeCountResult<{ updated: number }>("updated"));
 }
 
 export function refreshAccountsQuota(ids: string[], provider: AccountProvider): Promise<{ succeeded: number; failed: number }> {

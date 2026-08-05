@@ -141,7 +141,10 @@ type Credential struct {
 	RefreshDueAt              *time.Time
 	LastRefreshAt             *time.Time
 	RefreshFailureCount       int
+	LastRefreshErrorStatus    int
 	LastRefreshErrorCode      string
+	LastRefreshErrorMessage   string
+	LastRefreshErrorResponse  string
 	RefreshPermanent          bool
 	Enabled                   bool
 	AuthStatus                AuthStatus
@@ -211,7 +214,10 @@ type CredentialMaterial struct {
 	RefreshDueAt              *time.Time
 	LastRefreshAt             *time.Time
 	RefreshFailureCount       int
+	LastRefreshErrorStatus    int
 	LastRefreshErrorCode      string
+	LastRefreshErrorMessage   string
+	LastRefreshErrorResponse  string
 	RefreshPermanent          bool
 	UpdatedAt                 time.Time
 }
@@ -232,7 +238,10 @@ func (m CredentialMaterial) ApplyTo(value Credential) (Credential, bool) {
 	value.RefreshDueAt = m.RefreshDueAt
 	value.LastRefreshAt = m.LastRefreshAt
 	value.RefreshFailureCount = m.RefreshFailureCount
+	value.LastRefreshErrorStatus = m.LastRefreshErrorStatus
 	value.LastRefreshErrorCode = m.LastRefreshErrorCode
+	value.LastRefreshErrorMessage = m.LastRefreshErrorMessage
+	value.LastRefreshErrorResponse = m.LastRefreshErrorResponse
 	value.RefreshPermanent = m.RefreshPermanent
 	return value, true
 }
@@ -257,7 +266,7 @@ const (
 	QuotaSourceUpstream  QuotaSource = "upstream"
 )
 
-// QuotaWindow 表示 Grok Web 单个模式的请求额度窗口。
+// QuotaWindow 表示 Provider 单个模式的额度窗口。
 type QuotaWindow struct {
 	AccountID     uint64
 	Mode          string

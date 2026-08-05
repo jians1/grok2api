@@ -24,7 +24,7 @@ Grok2API 是一个纯 Go 实现的 Grok API 网关。项目将 Grok Build OAuth�
 <table>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE"><img src="https://raw.githubusercontent.com/Krill-ai-org/krill-ai-static/refs/heads/main/krill-logo/Eng/250x150.png" alt="Krill AI" width="160"></a></td>
-<td valign="middle">Thanks to Krill AI for sponsoring this project! Krill provides fast and stable official API access to GPT, Claude, Gemini, and a wide range of Chinese models, with enterprise customization, invoicing, and dedicated 7×16-hour technical support. Its specially adapted WebSocket connection delivers fast time to first token. Register through <a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE">this link</a>, enter the coupon code “grok2api” when ordering, and receive 23% off your first Codex package.</td>
+<td valign="middle">Krill AI provides fast, stable API access to GPT, Claude, Gemini, and leading Chinese models, with enterprise customization, invoicing, 7×16 support, and optimized WebSocket connections for faster first-token latency. Register through the <a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE">exclusive link</a> and use code “grok2api” for 23% off your first Codex package.</td>
 </tr>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://github.com/DEEIX-AI/DEEIX-Chat"><img src="frontend/public/sponner/deeix-chat_deeix-ai.png" alt="DEEIX AI / DEEIX Chat" width="160"></a></td>
@@ -33,6 +33,14 @@ Grok2API 是一个纯 Go 实现的 Grok API 网关。项目将 Grok Build OAuth�
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.right.codes/register"><img src="frontend/public/sponner/rightcode.jpg" alt="RightCode" width="160"></a></td>
 <td valign="middle">Right Code is an enterprise-grade AI Agent distribution platform that primarily provides stable access services for Claude Code, Codex, Gemini, and other models. It supports invoicing and dedicated one-to-one assistance for enterprises and teams. Thanks to Right Code for providing token support. Click <a href="https://www.right.codes/register">here</a> to register and get started.</td>
+</tr>
+<tr>
+<td width="200" align="center" valign="middle"><a href="https://api.fenno.ai/s/xCBS"><img src="frontend/public/sponner/fenno-ai.jpg" alt="FennoAI" width="160"></a></td>
+<td valign="middle">FennoAI provides enterprise-grade OpenAI/Anthropic-compatible APIs for Codex, Claude Code, and OpenCode, processing hundreds of billions of tokens daily with global business settlement and invoicing. Through the Grok2API <a href="https://api.fenno.ai/s/xCBS">exclusive offer</a>, USD 1.99 unlocks USD 50 in Coding Plan credits, plus referral commissions up to 20%.</td>
+</tr>
+<tr>
+<td width="200" align="center" valign="middle"><a href="https://s.qiniu.com/RNNZFf"><img src="frontend/public/sponner/qiniu.jpg" alt="Qiniu Cloud AI" width="160"></a></td>
+<td valign="middle">Qiniu Cloud AI, Qiniu Cloud’s (02567.HK) enterprise MaaS platform, offers protocol-compatible access to 150+ global models for text, image, audio, video, and files, serving 1.69+ million users. Grok2API registrations through the <a href="https://s.qiniu.com/RNNZFf">exclusive link</a> receive 12 million free enterprise tokens or 3 million developer tokens.</td>
 </tr>
 </table>
 
@@ -50,6 +58,7 @@ Grok2API 是一个纯 Go 实现的 Grok API 网关。项目将 Grok Build OAuth�
 - **Build 推理地址**：账号可选自动、强制 Build 或强制 XAI；自动模式下机器人风控账号默认 XAI，其它账号仅在 Build 明确 403 时回退（`/models`、Billing 与 stored GET/DELETE 始终走 Build）
 - **基础设施**：SQLite/PostgreSQL、Memory/Redis、HTTP/SOCKS5/Resin 出口
 - **可选 FlareSolverr Clearance**：独立容器维护 Grok Web/Console 的 Cloudflare Cookie / UA（默认不启动）
+- **可选出口质量守护**：`quality-guard` profile 提供逐节点主动探测、隔离与恢复（默认不启动）
 - **可选 reauth 自动清理**（默认关闭）：按间隔硬删除已标记 `reauthRequired` 且超过最短保留时长的账号
 - **安全边界**：AES-256-GCM 凭据加密、客户端密钥哈希、日志脱敏、SSRF 与传输上限
 - **管理后台**：Dashboard、账号、模型、客户端密钥、图库、视频库、请求审计、接口文档与热加载设置
@@ -80,7 +89,7 @@ flowchart LR
 
 ## 快速部署
 
-容器内统一使用 `/app/config.yaml`。首次启动时若该文件不存在，服务会自动生成默认配置；数据库与媒体保存在 `/app/data`，由命名卷持久化。
+容器内统一使用 `/app/config.yaml`。可通过 `GROK2API_CONFIG` 挂载宿主机配置到 `/run/grok2api/config.yaml`；未挂载时 entrypoint 会自动生成默认配置。数据库与媒体保存在 `/app/data`，由命名卷持久化。
 
 凭据加密密钥通过环境变量 `GROK2API_CREDENTIAL_ENCRYPTION_KEY` 注入（Base64 编码的 32 字节密钥）。`jwtSecret` 会由该密钥自动派生，无需单独配置。
 
@@ -246,7 +255,7 @@ Grok Console 固定使用 `store: false`，不支持 `previous_response_id`、Re
 
 ## 模型
 
-对外模型名称不带 Provider 前缀，例如 `grok-4.5`。内部上游路由使用 `Build/`、`Web/`、`Console/` 前缀区分实际来源；Grok Build 模型根据账号能力动态同步，请以管理端模型页或 `GET /v1/models` 为准。
+对外模型名称不带 Provider 前缀，例如 `grok-4.5`。内部上游路由使用 `Build/`、`Web/`、`Console/` 前缀区分实际来源；Grok Build 模型根据账号能力动态同步（含 `grok-composer-2.5-fast` 等 OAuth 会话补充模型），请以管理端模型页或 `GET /v1/models` 为准。
 
 升级时会原位迁移内部路由并保留路由主键、客户端密钥权限和旧名称别名。多个来源可以提供同一个对外模型名称；网关会按客户端权限、协议能力和账号可用性选择来源。带 Provider 前缀的名称仍可作为兼容入口，用于显式指定渠道。
 
@@ -267,14 +276,17 @@ Grok Console 内置模型：
 
 | 模型 | 能力 |
 | :-- | :-- |
+| `grok-4.5` | Responses / Chat / Messages |
 | `grok-4.3` | Responses / Chat / Messages |
-| `grok-4.20-0309` | Responses / Chat / Messages |
-| `grok-4.20-0309-reasoning` | Responses / Chat / Messages |
+| `grok-4.20-0309-reasoning` | Responses / Chat / Messages（上游不接受可配置 reasoningEffort） |
 | `grok-4.20-0309-non-reasoning` | Responses / Chat / Messages |
 | `grok-4.20-multi-agent-0309` | Responses / Chat / Messages |
 | `grok-build-0.1` | Responses / Chat / Messages |
+| `grok-imagine-image` | 图片生成 / 图片编辑 |
+| `grok-imagine-image-quality` | 图片生成 / 图片编辑 |
+| `grok-imagine-video` | 视频生成 |
 
-`grok-4.5` 不由 Grok Console Provider 注册；即使由 Web SSO 同步创建 Console 账号，该模型在 Console 中仍不可用。
+同一个 Console 图片模型的生成与编辑能力聚合为一条逻辑模型，无需单独的 `-edit` 副本。
 
 Console 上游路由始终使用 `Console/` 内部前缀，不再根据启动顺序生成 `-console` 冲突后缀。升级产生的兼容别名不会出现在 `GET /v1/models`。
 
@@ -338,12 +350,33 @@ curl http://127.0.0.1:8000/v1/responses \
 | `bootstrapAdmin` | 可选，自定义首次管理员；省略时默认 `admin` / `grok2api` |
 | `provider` | Build/Web/Console 上游默认配置 |
 | `media` | 媒体存储驱动与路径 |
+| `qualityGuard` | 可选出口质量守护策略（默认关闭） |
+
+### 出口质量守护（可选）
+
+可选的 [Egress Quality Guard](./tools/egress-quality-guard/README.zh-CN.md) 支持逐节点模型探测、防误杀隔离与自动恢复。通过内置 `quality-guard` Compose profile 启用：
+
+```yaml
+qualityGuard:
+  enabled: true
+  model: "grok-4.5"
+```
+
+```bash
+docker compose --profile quality-guard up -d --build
+```
+
+主服务会自动创建并复用不可导出的系统探测身份；普通 `docker compose up -d` 不会启动守护程序，也不会产生探测流量。修改 `qualityGuard` 基础配置后执行 `docker compose --profile quality-guard restart grok2api egress-quality-guard`；管理端策略编辑仍可热加载。
 
 环境变量：
 
 | 变量 | 说明 |
 | :-- | :-- |
 | `GROK2API_CREDENTIAL_ENCRYPTION_KEY` | 凭据加密主密钥（推荐）。可用 `openssl rand -base64 32` 生成 |
+| `GROK2API_DATABASE_URL` | 可选。非空时覆盖 PostgreSQL DSN 并启用 postgres 驱动 |
+| `GROK2API_QUALITY_GUARD_DIR` | 可选。出口质量守护共享状态目录（Compose 默认已设置） |
+| `GROK2API_CONFIG` | 可选。宿主机配置文件路径，挂载到容器 `/run/grok2api/config.yaml` |
+| `GROK2API_IMAGE` | 可选。覆盖默认镜像 `ghcr.io/jians1/grok2api:latest` |
 
 账号、模型、额度、审计、客户端密钥、媒体任务和运行设置始终保存在关系型数据库。Redis 用于限流、并发租约、粘滞路由、分布式锁、额度恢复事件和多实例设置通知。
 
@@ -368,6 +401,8 @@ docker compose --profile flaresolverr up -d
 
 ### Resin 粘性代理
 
+固定代理传输失败后会立即启动独立连通性复测；同节点并发失败合并为一次探测，后续绑定请求最多等待约 5 秒，健康后继续而无需等满冷却，不健康则保留冷却。代理池租约使用新隧道，单次轮换出口失败不会冷却整个池。详见 [出口失败立即复测与有界重试](./backend/internal/infra/egress/FAILURE_RETRY.md)。
+
 出口节点的代理用户名支持 `{account}` 占位符，可直接接入 Resin 的账号租约：
 
 ```text
@@ -377,6 +412,22 @@ socks5h://Default.{account}:RESIN_PROXY_TOKEN@resin:2260
 运行时会按凭据自动渲染为 `grok_build_<ID>`、`grok_web_<ID>` 或 `grok_console_<ID>`，不同账号使用独立连接池、Resin 租约和 Cloudflare clearance。Web/Console 账号 JSON 可通过 `cloudflare_cookies` 写入账号级 Cookie；账号级配置优先于出口节点的公共 Cookie，敏感值不会通过管理 API 回显。
 
 粘性代理只会在请求尚未写入上游且错误明确属于代理连接阶段时，使用同一账号额外重试两次。`401`、`429`、额度耗尽、永久凭据错误、`UPSTREAM_REQUEST_FAILED`，以及可能已经提交的生成请求都不会在出口层自动重放。
+
+可通过环境变量注入 PostgreSQL 连接串，无需写入 `config.yaml`：
+
+```bash
+GROK2API_DATABASE_URL='postgresql://user:password@host:5432/grok2api?sslmode=require' docker compose up -d
+```
+
+非空的 `GROK2API_DATABASE_URL` 会覆盖 `database.postgres.dsn` 并自动选择 `postgres` 驱动；空值忽略。支持 `postgres://` 与 `postgresql://`；SQLAlchemy 的 `postgresql+asyncpg://` 会给出迁移提示并拒绝。应用不会隐式读取通用 `DATABASE_URL`，平台若提供该变量可显式映射为 `GROK2API_DATABASE_URL: "${DATABASE_URL}"`。数据库配置优先级为：内置默认 → `config.yaml` → `GROK2API_DATABASE_URL`。
+
+其它可选运行设置：
+
+- `audit.ledgerMode`：`observe` 仅报告账本故障；`enforce` 可暂停新推理以保护计费完整性
+- `routing.accountIsolatedConnections`：按账号隔离出站 TCP/HTTP 连接池（默认关闭，会增加连接与 FD 占用）
+- `routing.segmentedSelectorEnabled`：大账号池分段选择优化，失败时回退完整规划器
+- Build 响应头超时与精确匹配 403 失效规则支持热加载
+- **同步最新版本** 可应用已验证的 Grok Build 客户端版本与 User-Agent
 
 ## Build Super entitlement 与 XAI 推理回退
 
