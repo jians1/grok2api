@@ -267,8 +267,8 @@ Grok Web 内置模型：
 | `grok-chat-auto` | Chat / Responses / Messages | Super |
 | `grok-chat-expert` | Chat / Responses / Messages | Super |
 | `grok-chat-heavy` | Chat / Responses / Messages | Heavy |
-| `grok-imagine-image` | Fast 图片生成 | Basic |
-| `grok-imagine-image-quality` | Quality 图片生成 | Super |
+| `grok-imagine-image-lite` | Fast 图片生成 | Basic |
+| `grok-imagine-image-quality-lite` | Quality 图片生成 | Super |
 | `grok-imagine-image-edit` | 图片编辑 | Super |
 | `grok-imagine-video` | 视频生成 | Super |
 
