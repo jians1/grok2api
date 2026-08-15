@@ -396,7 +396,11 @@ Provider（包括 Console 上游地址与 User-Agent）、服务容量、批量�
 docker compose --profile flaresolverr up -d
 ```
 
-随后在管理端打开 **设置 → 媒体与网络 / Clearance**，选择 `FlareSolverr`，服务地址使用 `http://flaresolverr:8191`。FlareSolverr 默认不映射到宿主机端口；每个 Web 或 Console 出口节点使用自身代理获取匹配的 Cookie 与 User-Agent。
+随后在管理端打开 **设置 → 媒体与网络 / Clearance**，服务地址使用 `http://flaresolverr:8191`。FlareSolverr 默认不映射到宿主机端口；每个 Web 或 Console 出口节点使用自身代理获取匹配的 Cookie 与 User-Agent。可按需选择以下模式：
+
+- `FlareSolverr` 按配置计划主动刷新过期的固定出口 Clearance。
+- `On demand`（按需）保留最近一次成功的 Clearance，仅在上游明确拒绝并使其失效后重新求解；该模式的计划任务不会启动浏览器。即使首次请求没有托管 Clearance，Cloudflare 拒绝后下一次租约也会执行一次去重后的求解。
+- `Manual` 不会调用 FlareSolverr。
 
 ### Resin 粘性代理
 
@@ -424,7 +428,7 @@ GROK2API_DATABASE_URL='postgresql://user:password@host:5432/grok2api?sslmode=req
 
 - `audit.ledgerMode`：`observe` 仅报告账本故障；`enforce` 可暂停新推理以保护计费完整性
 - `routing.accountIsolatedConnections`：按账号隔离出站 TCP/HTTP 连接池（默认关闭，会增加连接与 FD 占用）
-- `routing.segmentedSelectorEnabled`：大账号池分段选择优化，失败时回退完整规划器
+- `routing.segmentedSelectorEnabled`：大账号池默认启用有界分段选号；候选账号达到约 3,000 个时限制动态并发读取，同时保留额度/等级优先级、会话粘滞、完整规划器回退和原子门禁
 - Build 响应头超时与精确匹配 403 失效规则支持热加载
 - **同步最新版本** 可应用已验证的 Grok Build 客户端版本与 User-Agent
 
