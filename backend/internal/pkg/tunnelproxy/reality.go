@@ -107,7 +107,10 @@ func (p *realityProxy) handshake(ctx context.Context, connection net.Conn) (net.
 		return nil, err
 	}
 	hello := secure.HandshakeState.Hello
-	privateKey := secure.HandshakeState.State13.EcdheKey
+	privateKey := realityECDHEPrivateKey(secure)
+	if privateKey == nil {
+		return nil, errors.New("Reality TLS 1.3 ClientHello 未提供 ECDHE key share")
+	}
 
 	hello.SessionId = make([]byte, 32)
 	copy(hello.Raw[39:], hello.SessionId)
@@ -177,11 +180,22 @@ func buildRealityClientHello(connection net.Conn, serverName string, alpn []stri
 		config.NextProtos = append([]string(nil), alpn...)
 		secure.HandshakeState.Hello.AlpnProtocols = append([]string(nil), alpn...)
 	}
-	privateKey := secure.HandshakeState.State13.EcdheKey
+	privateKey := realityECDHEPrivateKey(secure)
 	if privateKey == nil || privateKey.Curve() != ecdh.X25519() {
 		return nil, fmt.Errorf("Reality 客户端指纹 %q 未提供 X25519 TLS 1.3 key share", helloID.Client)
 	}
 	return secure, nil
+}
+
+func realityECDHEPrivateKey(secure *utls.UConn) *ecdh.PrivateKey {
+	state := secure.HandshakeState.State13
+	if state.EcdheKey != nil {
+		return state.EcdheKey
+	}
+	if state.KeyShareKeys != nil {
+		return state.KeyShareKeys.Ecdhe
+	}
+	return nil
 }
 
 func realityPrefersAESGCM(cipherSuites []uint16) bool {
