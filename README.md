@@ -249,6 +249,10 @@ Grok Build OAuth 支持按需续期。Grok Web 与 Grok Console 的 SSO 不可�
 
 Grok Web 与 Grok Console 均支持账号列表 JSON，也支持每行一个 Token 的快速导入。账号接入接口会等待本批账号的首次额度与模型能力同步完成后再返回结果。
 
+Build Refresh Token 在续期时可能发生轮换。请勿让 grok2api、官方 CLI、其他网关或独立客户端同时使用同一份 Build 凭据，否则其中一个客户端可能消费另一个客户端仍在保存的旧 Token。建议为每个活跃客户端分别授权；如需迁移凭据，应先停止旧客户端继续使用。
+
+Web 账号工具支持接受协议、设置对应 20–40 岁的随机生日和开启 NSFW；已完成步骤会记录并在后续执行时跳过。
+
 管理端可复用 Web 账号的同一份 SSO 创建或更新对应的 Console 账号；同步按 Console 身份键幂等执行，不会改变已有 Web/Build 关联。
 
 Grok Console 固定使用 `store: false`，不支持 `previous_response_id`、Response 查询/删除或 `/responses/compact`。多轮调用应像 Codex 无状态链路一样回放完整输入、工具调用和工具结果；网关不会为 Console 响应登记虚假的持久化归属。
@@ -291,6 +295,10 @@ Grok Console 内置模型：
 Console 上游路由始终使用 `Console/` 内部前缀，不再根据启动顺序生成 `-console` 冲突后缀。升级产生的兼容别名不会出现在 `GET /v1/models`。
 
 同名模型会在当前可用来源中自动选路；来源选定后，账号故障切换只发生在该 Provider 的账号池内。
+
+Responses 与 Messages 支持流式、工具、推理、多轮会话和 compact。客户端会话信号会保持稳定，用于 Grok Build Prompt Cache 亲和；实际命中仍要求上游账号兼容且请求前缀未变化。同一网关实例内，仍可解密的 compact 摘要在 session / PromptCacheKey 漂移后也会展开；无法解密的外源 blob 仍视为兼容边界。
+
+Responses 与 Chat Completions 按 OpenAI 语义报告输入总量；Messages 按 Anthropic 语义分开报告未缓存输入和缓存读取。审计保留输入总量与缓存部分，用于计费对账。
 
 ## API
 
@@ -352,6 +360,15 @@ curl http://127.0.0.1:8000/v1/responses \
 | `media` | 媒体存储驱动与路径 |
 | `qualityGuard` | 可选出口质量守护策略（默认关闭） |
 
+### 出口节点
+
+- 支持 HTTP、HTTPS、SOCKS4/4A、SOCKS5/5H、Resin、Trojan、VLESS、Shadowsocks 与 VMess。
+- 隧道支持 TCP、WebSocket 和 TLS；未实现的传输形态会在导入时拒绝。
+- 支持订阅、文本/Base64 导入，以及批量探测、筛选、删除、分配与均衡。
+- 每个作用域可配置无回退、直连或固定节点；代理池模式下单次连接失败不会触发全局冷却。
+- 固定代理传输失败后会立即复测，按节点合并并发探测，并让后续绑定请求在有限时间内等待恢复后快速重试。
+- 固定 sticky 会话应各自使用独立节点（`proxyPool=false`）；不要把多条 sticky 合成一个节点，否则质量守护只能整组摘流。
+
 ### 出口质量守护（可选）
 
 可选的 [Egress Quality Guard](./tools/egress-quality-guard/README.zh-CN.md) 支持逐节点模型探测、防误杀隔离与自动恢复。通过内置 `quality-guard` Compose profile 启用：
@@ -360,7 +377,16 @@ curl http://127.0.0.1:8000/v1/responses \
 qualityGuard:
   enabled: true
   model: "grok-4.5"
+  # Optional: withhold thinking-model streams that have no reasoning.
+  requestRetry:
+    enabled: false
+    maxAttempts: 6
+    holdTimeout: 3s
+    minOutputTokens: 32
+    onExhausted: fail_closed # fail_open | fail_closed
 ```
+
+`requestRetry` runs on the gateway request path and is independent of the sidecar. It is off by default. When enabled, a thinking-model stream with enough visible output and no reasoning is **not delivered**; another account is tried. If every attempt still has no reasoning, `onExhausted` either returns `503 quality_degraded` or delivers the last body. Image, video, tool, stored-response, and ForcedEgress probe requests are unchanged.
 
 ```bash
 docker compose --profile quality-guard up -d --build
@@ -429,6 +455,7 @@ GROK2API_DATABASE_URL='postgresql://user:password@host:5432/grok2api?sslmode=req
 - `audit.ledgerMode`：`observe` 仅报告账本故障；`enforce` 可暂停新推理以保护计费完整性
 - `routing.accountIsolatedConnections`：按账号隔离出站 TCP/HTTP 连接池（默认关闭，会增加连接与 FD 占用）
 - `routing.segmentedSelectorEnabled`：大账号池默认启用有界分段选号；候选账号达到约 3,000 个时限制动态并发读取，同时保留额度/等级优先级、会话粘滞、完整规划器回退和原子门禁
+- `routing.autoAssignMaxNodeShare` / `routing.autoAssignMaxMigrationShare`：可选的大号池保护。`0`（默认）保持历史行为：不健康节点上的 auto 账号会一次性迁走，容量/再均衡仍最多 200 次。仅在隔离一个节点会把大量账号压到最后几个健康出口时，才设为 `0.05`–`1`。环境变量 `GROK2API_AUTO_ASSIGN_MAX_NODE_SHARE` 与 `GROK2API_AUTO_ASSIGN_MAX_MIGRATION_SHARE` 可覆盖 YAML。
 - Build 响应头超时与精确匹配 403 失效规则支持热加载
 - **同步最新版本** 可应用已验证的 Grok Build 客户端版本与 User-Agent
 
