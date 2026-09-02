@@ -16,6 +16,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -52,6 +53,23 @@ func isClearanceRefreshableMediaError(e *webMediaUpstreamError) bool {
 		return false
 	}
 	return e.cloudflareChallenge || e.bodyKind == "empty" || e.bodyKind == "html"
+}
+
+// isStatsigRefreshableMediaError identifies application-layer rejections that
+// tell the browser to reload its page state. Grok uses code 7 for this anti-bot
+// response, but the same code can also wrap a definitive account block; blocked
+// credentials must remain terminal and must not be replayed with a fresh signature.
+func isStatsigRefreshableMediaError(e *webMediaUpstreamError, body []byte) bool {
+	if e == nil || e.status != http.StatusForbidden || e.bodyKind != "json" || provider.IsDefinitiveAccountBlockBody(body) {
+		return false
+	}
+	code, message, structured := extractWebMediaUpstreamErrorFields(body)
+	if !structured {
+		return false
+	}
+	normalized := strings.ToLower(message)
+	return code == "7" || strings.Contains(normalized, "anti-bot") ||
+		strings.Contains(normalized, "page is out of date") || strings.Contains(normalized, "reload to continue")
 }
 
 func (e *webMediaUpstreamError) providerResponse() *provider.Response {
@@ -246,10 +264,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	defer lease.Release()
-	segments := videoSegments(request.Duration)
-	if len(segments) == 0 {
+	if len(videoSegments(request.Duration)) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
 	}
+	seconds := applyFreeWebVideoDurationCap(request.Duration, cfg.FreeVideoDurationCap, request.Credential)
+	segments := videoSegments(seconds)
 	ratio := resolveAspectRatio(request.AspectRatio)
 	resolution := request.Resolution
 	if resolution == "" {
@@ -497,6 +516,27 @@ func videoSegments(seconds int) []int {
 		return nil
 	}
 	return []int{seconds}
+}
+
+func normalizeFreeVideoDurationCap(value int) int {
+	return settingsdomain.NormalizeWebFreeVideoDurationCap(value)
+}
+
+func shouldCapWebVideoDuration(credential account.Credential) bool {
+	return credential.WebTier == account.WebTierBasic
+}
+
+// applyFreeWebVideoDurationCap clamps duration for free-tier Web accounts so
+// upstream 429s from >6s (or the configured cap) do not trigger useless account rotation.
+func applyFreeWebVideoDurationCap(seconds, cap int, credential account.Credential) int {
+	if !shouldCapWebVideoDuration(credential) {
+		return seconds
+	}
+	cap = normalizeFreeVideoDurationCap(cap)
+	if seconds > cap {
+		return cap
+	}
+	return seconds
 }
 
 // videoCreatePayload mirrors the current Grok Imagine browser request.
